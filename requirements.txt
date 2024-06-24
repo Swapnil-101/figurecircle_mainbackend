@@ -1,0 +1,12 @@
+Flask
+Flask-Cors
+Flask-JWT-Extended
+Flask-Mail
+SQLAlchemy
+oauthlib
+requests
+python-dotenv
+psycopg2
+gunicorn
+flask-socketio
+stripe
