@@ -841,7 +841,7 @@ def create_payment_intent():
 
         payment_intent = stripe.PaymentIntent.create(
             amount=amount,
-            currency='usd',  # Set the appropriate currency
+            currency='usd', 
             automatic_payment_methods={
                 'enabled': True,
             },
