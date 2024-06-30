@@ -23,6 +23,8 @@ import stripe
 
 
 
+
+
 load_dotenv()
 
 connection_string = "postgresql://neondb_owner:Pl8cWUu0iLHn@ep-tiny-haze-a1w7wrrg.ap-southeast-1.aws.neon.tech/figure_circle?sslmode=require"
@@ -77,7 +79,7 @@ class User(Base):
     username = Column(String, unique=True)
     password = Column(String)
     google_id = Column(String)
-
+    # email = Column(String, unique=True)
     # Establishing a One-to-One relationship with UserDetails
     details = relationship("UserDetails", back_populates="user", uselist=False)
 
@@ -149,7 +151,7 @@ app.config['GOOGLE_DISCOVERY_URL'] = (
 )
 
 mail = Mail(app)
-socketio = SocketIO(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 jwt = JWTManager(app)
 
 client = WebApplicationClient(app.config['GOOGLE_CLIENT_ID'])
@@ -332,6 +334,7 @@ def user_details():
         session.close()
         if user_details:
             user_details_dict = {
+                "user_id": user_details.id,
                 "first_name": user_details.first_name,
                 "last_name": user_details.last_name,
                 "school_name": user_details.school_name,
@@ -818,12 +821,16 @@ def assign_mentor():
 def create_payment_intent():
     data = request.get_json()
     mentor_id = data.get('mentor_id')
+    user_id = data.get('user_id')
 
     if not mentor_id:
         return jsonify({"message": "Mentor ID is required"}), 400
 
+    if not user_id:
+        return jsonify({"message": "User ID is required"}), 400
+
     session = Session()
-    user_id = get_jwt_identity()
+
     user = session.query(User).filter_by(id=user_id).first()
     mentor = session.query(Mentor).filter_by(id=mentor_id).first()
 
@@ -836,7 +843,6 @@ def create_payment_intent():
         return jsonify({"message": "Mentor not found"}), 404
 
     try:
-    
         amount = int(float(mentor.fees) * 100)
 
         payment_intent = stripe.PaymentIntent.create(
@@ -848,7 +854,7 @@ def create_payment_intent():
         )
 
         return jsonify({
-            'client_secret': payment_intent['client_secret'],
+            'client_secret': payment_intent,
             'publishable_key': os.getenv('STRIPE_PUBLISHABLE_KEY')
         }), 200
 
@@ -857,18 +863,20 @@ def create_payment_intent():
         return jsonify(error=str(e)), 500
 
 
+
 @app.route('/confirm_payment', methods=['POST'])
 @jwt_required()
 def confirm_payment():
     data = request.get_json()
     mentor_id = data.get('mentor_id')
     payment_intent_id = data.get('payment_intent_id')
+    user_id = data.get('user_id')
+    
 
     if not mentor_id or not payment_intent_id:
         return jsonify({"message": "Mentor ID and Payment Intent ID are required"}), 400
 
     session = Session()
-    user_id = get_jwt_identity()
     user = session.query(User).filter_by(id=user_id).first()
     mentor = session.query(Mentor).filter_by(id=mentor_id).first()
 
@@ -897,6 +905,7 @@ def confirm_payment():
     except Exception as e:
         session.close()
         return jsonify(error=str(e)), 500
+
 
 
 '''
@@ -954,7 +963,7 @@ def get_assigned_mentors():
             "id": mentor.id,
             "mentor_name": mentor.mentor_name,
             "username": mentor.username,  
-            "profile_photo": mentor.profile_photo.decode('utf-8', 'ignore'),  # Decode binary photo to string
+            # "profile_photo": mentor.profile_photo.decode('utf-8', 'ignore'),  # Decode binary photo to string
             "description": mentor.description,
             "highest_degree": mentor.highest_degree,
             "expertise": mentor.expertise,
@@ -1052,6 +1061,9 @@ def handle_message(data):
     session.close()
 
     emit('receive_message', {'sender_id': sender_id, 'message': message_text}, room=receiver_id)
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True)
 
 # Delete All Users Endpoint
 @app.route('/delete_users', methods=['DELETE'])
