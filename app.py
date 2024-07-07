@@ -1040,30 +1040,30 @@ def get_assigned_users():
 
     return jsonify({"assigned_users": user_list}), 200
 
-@socketio.on('send_message')
-def handle_message(data):
-    sender_id = data.get('sender_id')
-    receiver_id = data.get('receiver_id')
-    message_text = data.get('message')
+# @socketio.on('send_message')
+# def handle_message(data):
+#     sender_id = data.get('sender_id')
+#     receiver_id = data.get('receiver_id')
+#     message_text = data.get('message')
 
-    sender = User.query.get(sender_id)
-    receiver = Mentor.query.get(receiver_id)
+#     sender = User.query.get(sender_id)
+#     receiver = Mentor.query.get(receiver_id)
     
-    session = Session()
+#     session = Session()
 
-    if not sender or not receiver:
-        emit('message_status', {'success': False, 'message': 'Sender or receiver not found'})
-        return
+#     if not sender or not receiver:
+#         emit('message_status', {'success': False, 'message': 'Sender or receiver not found'})
+#         return
 
-    new_message = Msg(sender_id=sender_id, receiver_id=receiver_id, message=message_text)
-    session.add(new_message)
-    session.commit()
-    session.close()
+#     new_message = Msg(sender_id=sender_id, receiver_id=receiver_id, message=message_text)
+#     session.add(new_message)
+#     session.commit()
+#     session.close()
 
-    emit('receive_message', {'sender_id': sender_id, 'message': message_text}, room=receiver_id)
+#     emit('receive_message', {'sender_id': sender_id, 'message': message_text}, room=receiver_id)
 
-if __name__ == '__main__':
-    socketio.run(app, debug=True)
+# if __name__ == '__main__':
+#     socketio.run(app, debug=True)
 
 # Delete All Users Endpoint
 @app.route('/delete_users', methods=['DELETE'])
