@@ -29,7 +29,7 @@ load_dotenv()
 
 connection_string = "postgresql://neondb_owner:Pl8cWUu0iLHn@ep-tiny-haze-a1w7wrrg.ap-southeast-1.aws.neon.tech/figure_circle?sslmode=require"
 
-engine = create_engine(connection_string)
+engine = create_engine(connection_string,connect_args={'connect_timeout': 10})
 
 Base = declarative_base()
 
@@ -37,6 +37,7 @@ user_mentor_association = Table('user_mentor_association', Base.metadata,
                                 Column('user_id', Integer, ForeignKey('users.id')),
                                 Column('mentor_id', Integer, ForeignKey('mentors.id'))
                                 )
+                                
 
 class Admin(Base):
     __tablename__ = 'admins'
@@ -908,40 +909,6 @@ def confirm_payment():
 
 
 
-'''
-@app.route('/add_stream_chosen', methods=['PUT'])
-@jwt_required()
-def add_stream_chosen():
-    current_user = get_jwt_identity()  # Retrieve username from the JWT token
-    
-    session = Session()
-
-    user = session.query(User).filter_by(username=current_user).first()
-
-    if not user:
-        session.close()
-        return jsonify({"message": "User not found"}), 404
-
-    data = request.get_json()
-    stream_chosen = data.get('stream_chosen')
-
-    if not stream_chosen:
-        session.close()
-        return jsonify({"message": "Stream chosen is required"}), 400
-
-    user_details = user.details
-    if not user_details:
-        user_details = UserDetails(user=user)
-
-    user_details.stream_chosen = stream_chosen
-    user_details.data_filled = True  # Assuming this field should be marked as filled
-
-    session.commit()
-    session.close()
-
-    return jsonify({"message": "Stream chosen updated successfully"}), 200
-
-'''
 
 @app.route('/assigned_mentors', methods=['GET'])
 @jwt_required()
@@ -980,34 +947,7 @@ def get_assigned_mentors():
 
     return jsonify({"assigned_mentors": mentor_list}), 200
 
-"""
 
-@app.route('/chosen_stream', methods=['GET'])
-@jwt_required()
-def get_chosen_stream():
-    current_user = get_jwt_identity()
-
-    session = Session()
-
-    user = session.query(User).filter_by(username=current_user).first()
-
-    if not user:
-        session.close()
-        return jsonify({"message": "User not found"}), 404
-
-    user_details = user.details
-
-    if not user_details:
-        session.close()
-        return jsonify({"message": "User details not found"}), 404
-
-    chosen_stream = user_details.stream_chosen
-
-    session.close()
-
-    return jsonify({"chosen_stream": chosen_stream}), 200
-
-"""
 
 @app.route('/assigned_users', methods=['GET'])
 @jwt_required()
@@ -1017,7 +957,7 @@ def get_assigned_users():
     session = Session()
 
     # Query the mentor associated with the current authenticated user
-    mentor = session.query(Mentor).join(User.mentors).filter(User.username == current_user).first()
+    mentor = session.query(Mentor).join(user_mentor_association).join(User).filter(User.username == current_user).first()
 
     if not mentor:
         session.close()
@@ -1040,30 +980,73 @@ def get_assigned_users():
 
     return jsonify({"assigned_users": user_list}), 200
 
-# @socketio.on('send_message')
-# def handle_message(data):
-#     sender_id = data.get('sender_id')
-#     receiver_id = data.get('receiver_id')
-#     message_text = data.get('message')
+@socketio.on('join_room')
+def handle_join_room(data):
+    sender_id = data.get('sender_id')
+    receiver_id = data.get('receiver_id')
 
-#     sender = User.query.get(sender_id)
-#     receiver = Mentor.query.get(receiver_id)
+    if not sender_id or not receiver_id:
+        emit('message_error', {"error": "sender_id and receiver_id are required"})
+        return
     
-#     session = Session()
+    room = f"{min(sender_id, receiver_id)}_{max(sender_id, receiver_id)}"
+    join_room(room)
+    emit('joined_room', {"room": room})
 
-#     if not sender or not receiver:
-#         emit('message_status', {'success': False, 'message': 'Sender or receiver not found'})
-#         return
+@socketio.on('get_messages')
+def handle_get_messages(data):
+    sender_id = data.get('sender_id')
+    receiver_id = data.get('receiver_id')
+    
+    if not sender_id or not receiver_id:
+        emit('message_error', {"error": "sender_id and receiver_id are required"})
+        return
+    
+    session = Session()
+    try:
+        messages = session.query(Msg).filter(
+            ((Msg.sender_id == sender_id) & (Msg.receiver_id == receiver_id)) |
+            ((Msg.sender_id == receiver_id) & (Msg.receiver_id == sender_id))
+        ).order_by(Msg.timestamp).all()
+        
+        message_list = [
+            {"sender_id": msg.sender_id, "receiver_id": msg.receiver_id, "message": msg.message, "timestamp": msg.timestamp.isoformat()}
+            for msg in messages
+        ]
+        
+        emit('message_history', {"messages": message_list})
+    except Exception as e:
+        emit('message_error', {"error": str(e)})
+    finally:
+        session.close()
 
-#     new_message = Msg(sender_id=sender_id, receiver_id=receiver_id, message=message_text)
-#     session.add(new_message)
-#     session.commit()
-#     session.close()
+@socketio.on('send_message')
+def handle_message(data):
+    sender_id = data.get('sender_id')
+    receiver_id = data.get('receiver_id')
+    message_text = data.get('message')
 
-#     emit('receive_message', {'sender_id': sender_id, 'message': message_text}, room=receiver_id)
+    session = Session()
+    
+    try:
+        sender = session.get(User, sender_id)
+        receiver = session.get(Mentor, receiver_id)
 
-# if __name__ == '__main__':
-#     socketio.run(app, debug=True)
+        if not sender or not receiver:
+            emit('message_status', {'success': False, 'message': 'Sender or receiver not found'})
+            return
+
+        new_message = Msg(sender_id=sender_id, receiver_id=receiver_id, message=message_text)
+        session.add(new_message)
+        session.commit()
+
+        room = f"{min(sender_id, receiver_id)}_{max(sender_id, receiver_id)}"
+        emit('receive_message', {'sender_id': sender_id, 'message': message_text, 'timestamp': new_message.timestamp.isoformat()}, room=room)
+    finally:
+        session.close()
+
+if __name__ == '__main__':
+    socketio.run(app, debug=True)
 
 # Delete All Users Endpoint
 @app.route('/delete_users', methods=['DELETE'])
