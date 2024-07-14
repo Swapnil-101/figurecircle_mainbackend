@@ -69,8 +69,11 @@ class Mentor(Base):
     stream_name = Column(String, ForeignKey('streams.name')) 
     country = Column(String)
     verified = Column(Boolean, default=False)
- 
+     # Define the relationship to User
+    users = relationship("User", secondary=user_mentor_association, back_populates="mentors")
     stream = relationship("Stream", backref="mentors") 
+
+    
 
 
 class User(Base):
@@ -946,6 +949,7 @@ def get_assigned_mentors():
     session.close()
 
     return jsonify({"assigned_mentors": mentor_list}), 200
+
 
 
 
