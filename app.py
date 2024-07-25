@@ -3,7 +3,7 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, and_, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy import Table, ForeignKey
@@ -19,6 +19,8 @@ import base64
 from datetime import datetime
 from flask_socketio import emit
 from flask_socketio import SocketIO
+from flask_socketio import join_room
+
 import stripe
 
 
@@ -111,17 +113,16 @@ class UserDetails(Base):
     stream = relationship("Stream", backref="user_details") 
     
 class Msg(Base):
-    __tablename__ = 'messages'
+    __tablename__ = 'messagesdata'
 
     id = Column(Integer, primary_key=True)
     sender_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    receiver_id = Column(Integer, ForeignKey('mentors.id'), nullable=False)
+    receiver_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     message = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
-    sender = relationship("User", backref="sent_messages", foreign_keys=[sender_id])
-    receiver = relationship("Mentor", backref="received_messages", foreign_keys=[receiver_id])
-
+    sender = relationship("User", foreign_keys=[sender_id], backref="sent_messages")
+    receiver = relationship("User", foreign_keys=[receiver_id], backref="received_messages")
 
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
@@ -960,29 +961,75 @@ def get_assigned_users():
 
     session = Session()
 
+    # Fetch user ID if the current_user is an email
+    if isinstance(current_user, str):  # Assuming current_user is an email string
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            session.close()
+            return jsonify({"message": "User not found"}), 404
+        current_user_id = user.id
+    else:
+        current_user_id = current_user
+
     # Query the mentor associated with the current authenticated user
-    mentor = session.query(Mentor).join(user_mentor_association).join(User).filter(User.username == current_user).first()
+    mentor = session.query(Mentor).join(user_mentor_association).filter(
+        user_mentor_association.c.user_id == current_user_id
+    ).first()
 
     if not mentor:
         session.close()
         return jsonify({"message": "Mentor not found for the current user"}), 404
 
-    assigned_users = mentor.users  # Fetch assigned users using the relationship
+    # Fetch assigned users using the relationship
+    assigned_users = session.query(User).join(user_mentor_association).filter(
+        user_mentor_association.c.mentor_id == mentor.id
+    ).all()
 
     user_list = []
     for user in assigned_users:
         user_info = {
-            "user_id": user.id,
+            "id": user.id,
             "username": user.username,
             "first_name": user.details.first_name if user.details else None,
             "last_name": user.details.last_name if user.details else None,
-            "email": user.username,  # Assuming username is the email
+            "email": user.username, 
         }
         user_list.append(user_info)
 
     session.close()
 
     return jsonify({"assigned_users": user_list}), 200
+
+
+
+@socketio.on('send_message')
+def handle_message(data):
+    sender_id = data.get('sender_id')
+    receiver_id = data.get('receiver_id')
+    message_text = data.get('message')
+
+    session = Session()
+    
+    try:
+        # Check if sender and receiver are both Users
+        sender = session.query(User).filter_by(id=sender_id).first()
+        receiver = session.query(User).filter_by(id=receiver_id).first()
+
+        if not sender or not receiver:
+            emit('message_status', {'success': False, 'message': 'Sender or receiver not found'})
+            return
+
+        new_message = Msg(sender_id=sender_id, receiver_id=receiver_id, message=message_text)
+        session.add(new_message)
+        session.commit()
+
+        room = f"{min(sender_id, receiver_id)}_{max(sender_id, receiver_id)}"
+        emit('receive_message', {'sender_id': sender_id, 'message': message_text, 'timestamp': new_message.timestamp.isoformat()}, room=room)
+    except Exception as e:
+        emit('message_status', {'success': False, 'message': str(e)})
+    finally:
+        session.close()
+
 
 @socketio.on('join_room')
 def handle_join_room(data):
@@ -1009,8 +1056,10 @@ def handle_get_messages(data):
     session = Session()
     try:
         messages = session.query(Msg).filter(
-            ((Msg.sender_id == sender_id) & (Msg.receiver_id == receiver_id)) |
-            ((Msg.sender_id == receiver_id) & (Msg.receiver_id == sender_id))
+            or_(
+                and_(Msg.sender_id == sender_id, Msg.receiver_id == receiver_id),
+                and_(Msg.sender_id == receiver_id, Msg.receiver_id == sender_id)
+            )
         ).order_by(Msg.timestamp).all()
         
         message_list = [
@@ -1021,31 +1070,6 @@ def handle_get_messages(data):
         emit('message_history', {"messages": message_list})
     except Exception as e:
         emit('message_error', {"error": str(e)})
-    finally:
-        session.close()
-
-@socketio.on('send_message')
-def handle_message(data):
-    sender_id = data.get('sender_id')
-    receiver_id = data.get('receiver_id')
-    message_text = data.get('message')
-
-    session = Session()
-    
-    try:
-        sender = session.get(User, sender_id)
-        receiver = session.get(Mentor, receiver_id)
-
-        if not sender or not receiver:
-            emit('message_status', {'success': False, 'message': 'Sender or receiver not found'})
-            return
-
-        new_message = Msg(sender_id=sender_id, receiver_id=receiver_id, message=message_text)
-        session.add(new_message)
-        session.commit()
-
-        room = f"{min(sender_id, receiver_id)}_{max(sender_id, receiver_id)}"
-        emit('receive_message', {'sender_id': sender_id, 'message': message_text, 'timestamp': new_message.timestamp.isoformat()}, room=room)
     finally:
         session.close()
 
