@@ -131,7 +131,7 @@ Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
 app = Flask(__name__)
-CORS(app, support_credentials=True)
+CORS(app, support_credentials=True,origins="*")
 app.config['JWT_SECRET_KEY'] = "123456"
 
 app.config['MAIL_SERVER'] = "smtp.gmail.com"
