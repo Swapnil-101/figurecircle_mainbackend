@@ -29,7 +29,8 @@ import stripe
 
 load_dotenv()
 
-connection_string = "postgresql://neondb_owner:Pl8cWUu0iLHn@ep-tiny-haze-a1w7wrrg.ap-southeast-1.aws.neon.tech/figure_circle?sslmode=require"
+connection_string = "postgresql://neondb_owner:Pl8cWUu0iLHn@ep-tiny-haze-a1w7wrrg.ap-southeast-1.aws.neon.tech/figure_circle"
+
 
 engine = create_engine(connection_string,connect_args={'connect_timeout': 10})
 
