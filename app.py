@@ -954,46 +954,48 @@ def get_assigned_mentors():
 
 
 
-
 @app.route('/assigned_users', methods=['GET'])
 @jwt_required()
 def get_assigned_users():
     current_user = get_jwt_identity()
-
     session = Session()
 
-    # Fetch user ID if the current_user is an email
-    if isinstance(current_user, str):  # Assuming current_user is an email string
-        user = session.query(User).filter_by(username=current_user).first()
-        if not user:
-            session.close()
-            return jsonify({"message": "User not found"}), 404
-        current_user_id = user.id
-    else:
-        current_user_id = current_user
+    # Fetch user object based on current_user
+    user = session.query(User).filter_by(username=current_user).first()
+    
 
-    # Query the mentor associated with the current authenticated user
-    mentor = session.query(Mentor).join(user_mentor_association).filter(
-        user_mentor_association.c.user_id == current_user_id
-    ).first()
+    
+
+    if not user:
+        session.close()
+        return jsonify({"message": "User not found"}), 404
+
+    # Check if the user is a mentor
+    # mentor = session.query(Mentor).join(user_mentor_association).filter(
+    #     user_mentor_association.c.mentor_id == user.id
+    # ).first()
+    mentor = session.query(Mentor).filter_by(username=current_user).first()
+
+    print("mentorid==?",mentor)
+
 
     if not mentor:
         session.close()
-        return jsonify({"message": "Mentor not found for the current user"}), 404
+        return jsonify({"message": "User is not a mentor"}), 403
 
-    # Fetch assigned users using the relationship
+    # Fetch assigned users for this mentor
     assigned_users = session.query(User).join(user_mentor_association).filter(
         user_mentor_association.c.mentor_id == mentor.id
     ).all()
 
     user_list = []
-    for user in assigned_users:
+    for assigned_user in assigned_users:
         user_info = {
-            "id": user.id,
-            "username": user.username,
-            "first_name": user.details.first_name if user.details else None,
-            "last_name": user.details.last_name if user.details else None,
-            "email": user.username, 
+            "id": assigned_user.id,
+            "username": assigned_user.username,
+            "first_name": assigned_user.details.first_name if assigned_user.details else None,
+            "last_name": assigned_user.details.last_name if assigned_user.details else None,
+            "email": assigned_user.username,  # Assuming username is used as email
         }
         user_list.append(user_info)
 
