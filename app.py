@@ -690,6 +690,107 @@ def mentors_by_stream():
     except Exception as e:
         session.close()
         return jsonify({"message": f"Failed to retrieve mentors: {str(e)}"}), 500
+    
+@app.route('/mentors_by_similar_stream', methods=['GET'])
+@jwt_required()
+def mentors_by_similar_stream():
+    current_user = get_jwt_identity()
+    session = Session()
+
+    user = session.query(User).filter_by(username=current_user).first()
+
+    if not user:
+        session.close()
+        return jsonify({"message": "User not found"}), 404
+
+    user_details = user.details
+
+    if not user_details or not user_details.stream_name:
+        session.close()
+        return jsonify({"message": "User stream not found"}), 404
+
+    stream_name = user_details.stream_name
+
+    try:
+        # Assuming Mentor has a relationship 'stream' and Stream has an attribute 'name'
+        # Using SQLAlchemy 'like' for partial match, case-insensitive
+        similar_streams = f"%{stream_name}%"  # Matches any stream containing the user's stream name
+        mentors = session.query(Mentor).filter(Mentor.stream.has(Stream.name.ilike(similar_streams))).all()
+        
+        app.logger.debug(f"Partial match mentors: {mentors}")
+
+        mentor_list = []
+        for mentor in mentors:
+            mentor_info = {
+                "mentor_id": mentor.id,
+                "username": mentor.username,
+                "mentor_name": mentor.mentor_name,
+                # "profile_photo": mentor.profile_photo.decode('utf-8', 'ignore'),  
+                "description": mentor.description,
+                "highest_degree": mentor.highest_degree,
+                "expertise": mentor.expertise,
+                "recent_project": mentor.recent_project,
+                "meeting_time": mentor.meeting_time,
+                "fees": mentor.fees,
+                "stream": mentor.stream.name,
+                "country": mentor.country,
+                "verified": mentor.verified
+            }
+            mentor_list.append(mentor_info)
+
+        session.close()
+        return jsonify({"mentors_with_similar_stream": mentor_list}), 200
+
+    except Exception as e:
+        session.close()
+        return jsonify({"message": f"Failed to retrieve mentors: {str(e)}"}), 500
+    
+
+@app.route('/all_mentors', methods=['GET'])
+@jwt_required()
+def all_mentors():
+    current_user = get_jwt_identity()
+    session = Session()
+
+    user = session.query(User).filter_by(username=current_user).first()
+
+    if not user:
+        session.close()
+        return jsonify({"message": "User not found"}), 404
+
+    try:
+        # Fetch all mentors without filtering by stream
+        mentors = session.query(Mentor).all()
+
+        app.logger.debug(f"All mentors: {mentors}")
+
+        mentor_list = []
+        for mentor in mentors:
+            mentor_info = {
+                "mentor_id": mentor.id,
+                "username": mentor.username,
+                "mentor_name": mentor.mentor_name,
+                # "profile_photo": mentor.profile_photo.decode('utf-8', 'ignore'),  
+                "description": mentor.description,
+                "highest_degree": mentor.highest_degree,
+                "expertise": mentor.expertise,
+                "recent_project": mentor.recent_project,
+                "meeting_time": mentor.meeting_time,
+                "fees": mentor.fees,
+                "stream": mentor.stream.name,
+                "country": mentor.country,
+                "verified": mentor.verified
+            }
+            mentor_list.append(mentor_info)
+
+        session.close()
+        return jsonify({"all_mentors": mentor_list}), 200
+
+    except Exception as e:
+        session.close()
+        return jsonify({"message": f"Failed to retrieve mentors: {str(e)}"}), 500
+
+
 
 
 @app.route('/admin/verify_mentor/<int:mentor_id>', methods=['PUT'])
