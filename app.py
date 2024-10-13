@@ -642,6 +642,55 @@ def update_mentor(mentor_id):
     return jsonify({"message": "Mentor details updated successfully"}), 200
 
 
+# @app.route('/mentors_by_stream', methods=['GET'])
+# @jwt_required()
+# def mentors_by_stream():
+#     current_user = get_jwt_identity()
+#     session = Session()
+
+#     user = session.query(User).filter_by(username=current_user).first()
+
+#     if not user:
+#         session.close()
+#         return jsonify({"message": "User not found"}), 404
+
+#     user_details = user.details
+    
+#     if not user_details or not user_details.stream_name:
+#         session.close()
+#         return jsonify({"message": "User stream not found"}), 404
+
+#     stream_name = user_details.stream_name
+
+#     try:
+#         # Assuming Mentor has a relationship 'stream' and Stream has an attribute 'name'
+#         mentors = session.query(Mentor).filter(Mentor.stream.has(name=stream_name)).all()
+#         app.logger.debug(f"checking: {mentors}")
+#         mentor_list = []
+#         for mentor in mentors:
+#             mentor_info = {
+#                 "mentor_id": mentor.id,
+#                 "username": mentor.username,
+#                 "mentor_name": mentor.mentor_name,
+#                 # "profile_photo": mentor.profile_photo.decode('utf-8', 'ignore'),  
+#                 "description": mentor.description,
+#                 "highest_degree": mentor.highest_degree,
+#                 "expertise": mentor.expertise,
+#                 "recent_project": mentor.recent_project,
+#                 "meeting_time": mentor.meeting_time,
+#                 "fees": mentor.fees,
+#                 "stream": mentor.stream.name,
+#                 "country": mentor.country,
+#                 "verified": mentor.verified
+#             }
+#             mentor_list.append(mentor_info)
+
+#         session.close()
+#         return jsonify({"mentors_with_same_stream": mentor_list}), 200
+#     except Exception as e:
+#         session.close()
+#         return jsonify({"message": f"Failed to retrieve mentors: {str(e)}"}), 500
+
 @app.route('/mentors_by_stream', methods=['GET'])
 @jwt_required()
 def mentors_by_stream():
@@ -655,7 +704,7 @@ def mentors_by_stream():
         return jsonify({"message": "User not found"}), 404
 
     user_details = user.details
-    
+
     if not user_details or not user_details.stream_name:
         session.close()
         return jsonify({"message": "User stream not found"}), 404
@@ -663,11 +712,18 @@ def mentors_by_stream():
     stream_name = user_details.stream_name
 
     try:
-        # Assuming Mentor has a relationship 'stream' and Stream has an attribute 'name'
-        mentors = session.query(Mentor).filter(Mentor.stream.has(name=stream_name)).all()
-        app.logger.debug(f"checking: {mentors}")
-        mentor_list = []
-        for mentor in mentors:
+        # Step 1: Retrieve mentors with the same stream as the user
+        mentors_in_same_stream = session.query(Mentor).filter(Mentor.stream.has(name=stream_name)).all()
+
+        if not mentors_in_same_stream:
+            session.close()
+            return jsonify({"message": "No mentors found in the user's stream"}), 404
+
+        # Format the mentors of the same stream
+        mentors_list_same_stream = []
+        mentor_ids_same_stream = []
+
+        for mentor in mentors_in_same_stream:
             mentor_info = {
                 "mentor_id": mentor.id,
                 "username": mentor.username,
@@ -683,13 +739,46 @@ def mentors_by_stream():
                 "country": mentor.country,
                 "verified": mentor.verified
             }
-            mentor_list.append(mentor_info)
+            mentors_list_same_stream.append(mentor_info)
+            mentor_ids_same_stream.append(mentor.id)  # Collect mentor IDs for further lookup
+
+        # Step 2: Fetch mentors related to the mentors in the same stream, but exclude the mentors already retrieved
+        related_mentors = session.query(Mentor).filter(
+            Mentor.users.any(User.mentors.any(Mentor.id.in_(mentor_ids_same_stream))),
+            ~Mentor.id.in_(mentor_ids_same_stream)  # Exclude mentors from mentors_with_same_stream
+        ).all()
+
+        mentors_list_related = []
+
+        for related_mentor in related_mentors:
+            related_mentor_info = {
+                "mentor_id": related_mentor.id,
+                "username": related_mentor.username,
+                "mentor_name": related_mentor.mentor_name,
+                # "profile_photo": related_mentor.profile_photo.decode('utf-8', 'ignore'),  
+                "description": related_mentor.description,
+                "highest_degree": related_mentor.highest_degree,
+                "expertise": related_mentor.expertise,
+                "recent_project": related_mentor.recent_project,
+                "meeting_time": related_mentor.meeting_time,
+                "fees": related_mentor.fees,
+                "stream": related_mentor.stream.name,
+                "country": related_mentor.country,
+                "verified": related_mentor.verified
+            }
+            mentors_list_related.append(related_mentor_info)
 
         session.close()
-        return jsonify({"mentors_with_same_stream": mentor_list}), 200
+
+        return jsonify({
+            "mentors_with_same_stream": mentors_list_same_stream,
+            "related_mentors": mentors_list_related
+        }), 200
+
     except Exception as e:
         session.close()
         return jsonify({"message": f"Failed to retrieve mentors: {str(e)}"}), 500
+
     
 @app.route('/mentors_by_similar_stream', methods=['GET'])
 @jwt_required()
