@@ -22,6 +22,9 @@ from flask_socketio import SocketIO
 from flask_socketio import join_room
 
 import stripe
+import razorpay
+from razorpay import Client
+
 
 
 
@@ -41,6 +44,7 @@ user_mentor_association = Table('user_mentor_association', Base.metadata,
                                 Column('mentor_id', Integer, ForeignKey('mentors.id'))
                                 )
                                 
+razorpay_client = razorpay.Client(auth=("rzp_test_D4OC2CLZNTebD7", "jMZ25X4tiMwrtmYIXxDGPVbb"))
 
 class Admin(Base):
     __tablename__ = 'admins'
@@ -897,6 +901,58 @@ def get_unverified_mentors():
     session.close()
 
     return jsonify({"unverified_mentors": mentor_list}), 200
+
+
+
+
+# razor pay mentor
+@app.route('/create_order', methods=['POST'])
+def create_order():
+    session = Session()
+    data = request.get_json()
+    mentor_id = data.get('mentor_id') 
+    mentor = session.query(Mentor).filter_by(id=mentor_id).first()
+    if mentor is None:
+        session.close()
+        return jsonify({"message": "Mentor not found"}), 404
+      
+    mentor_fees = int(mentor.fees) * 100 
+
+    payment_order = razorpay_client.order.create({
+        "amount": mentor_fees, 
+        "currency": "INR",
+        "payment_capture": 1  
+    })
+    session.close()
+    return jsonify(payment_order), 200
+
+@app.route('/verify_payment', methods=['POST'])
+@jwt_required()
+def verify_payment():
+    current_user = get_jwt_identity()
+    data = request.get_json()
+
+    # Razorpay payment details
+    payment_id = data.get('razorpay_payment_id')
+    order_id = data.get('razorpay_order_id')
+    signature = data.get('razorpay_signature')
+
+    # Verify payment signature
+    try:
+        razorpay_client.utility.verify_payment_signature({
+            'razorpay_order_id': order_id,
+            'razorpay_payment_id': payment_id,
+            'razorpay_signature': signature
+        })
+    except razorpay.errors.SignatureVerificationError:
+        return jsonify({"message": "Payment verification failed"}), 400
+
+    # If verification is successful, call assign_mentor API
+    mentor_id = data.get('mentor_id')
+    user_id = data.get('user_id')
+
+    response = assign_mentor(mentor_id, user_id)  # Call your function for mentor assignment
+    return response
 
 
 @app.route('/assign_mentor', methods=['POST'])
