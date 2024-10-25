@@ -43,12 +43,8 @@ user_mentor_association = Table('user_mentor_association', Base.metadata,
                                 Column('user_id', Integer, ForeignKey('users.id')),
                                 Column('mentor_id', Integer, ForeignKey('mentors.id'))
                                 )
-
-
-RAZOR_SECRET_KEY= os.getenv('key')
-RAZOR_PUBLISHABLE_KEY = os.getenv('scretekey')
-                        
-razorpay_client = razorpay.Client(auth=(RAZOR_SECRET_KEY, RAZOR_PUBLISHABLE_KEY))
+                                
+razorpay_client = razorpay.Client(auth=("rzp_test_D4OC2CLZNTebD7", "jMZ25X4tiMwrtmYIXxDGPVbb"))
 
 class Admin(Base):
     __tablename__ = 'admins'
