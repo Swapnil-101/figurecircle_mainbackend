@@ -1005,7 +1005,7 @@ def create_order():
         session.close()
         return jsonify({"message": "Mentor not found"}), 404
       
-    mentor_fees = int(mentor.fees)
+    mentor_fees = float(mentor.fees)*100
     
 
     payment_order = razorpay_client.order.create({
@@ -1017,12 +1017,9 @@ def create_order():
     return jsonify(payment_order), 200
 
 @app.route('/verify_payment', methods=['POST'])
-@jwt_required()
 def verify_payment():
-    current_user = get_jwt_identity()
     data = request.get_json()
-
-    # Razorpay payment details
+    
     payment_id = data.get('razorpay_payment_id')
     order_id = data.get('razorpay_order_id')
     signature = data.get('razorpay_signature')
@@ -1037,12 +1034,11 @@ def verify_payment():
     except razorpay.errors.SignatureVerificationError:
         return jsonify({"message": "Payment verification failed"}), 400
 
-    # If verification is successful, call assign_mentor API
-    mentor_id = data.get('mentor_id')
-    user_id = data.get('user_id')
+    # Payment verification successful
+    # Optionally: Add logic to record the payment in your database here.
 
-    response = assign_mentor(mentor_id, user_id)  # Call your function for mentor assignment
-    return response
+    return jsonify({"message": "Payment verified successfully!"}), 200
+
 
 
 @app.route('/assign_mentor', methods=['POST'])
