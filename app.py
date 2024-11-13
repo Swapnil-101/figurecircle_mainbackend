@@ -66,19 +66,20 @@ class Mentor(Base):
     id = Column(Integer, primary_key=True)
     mentor_name = Column(String)
     username = Column(String, unique=True)
-    profile_photo = Column(LargeBinary)  
+    profile_photo = Column(LargeBinary)
     description = Column(String)
     highest_degree = Column(String)
     expertise = Column(String)
     recent_project = Column(String)
     meeting_time = Column(String)
     fees = Column(String)
-    stream_name = Column(String, ForeignKey('streams.name')) 
+    stream_name = Column(String, ForeignKey('streams.name'))
     country = Column(String)
     verified = Column(Boolean, default=False)
-     # Define the relationship to User
+    user_id = Column(Integer, ForeignKey('users.id'))  # Add the user_id column as a foreign key to User
+
     users = relationship("User", secondary=user_mentor_association, back_populates="mentors")
-    stream = relationship("Stream", backref="mentors") 
+    stream = relationship("Stream", backref="mentors")
 
     
 
@@ -128,11 +129,35 @@ class Msg(Base):
 
     sender = relationship("User", foreign_keys=[sender_id], backref="sent_messages")
     receiver = relationship("User", foreign_keys=[receiver_id], backref="received_messages")
-
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 Base.metadata.create_all(engine)
 
+
+# class Notification(Base):
+#     __tablename__ = 'notifications'
+
+#     id = Column(Integer, primary_key=True)
+#     user_id = Column(Integer, ForeignKey('users.id'))
+#     mentor_id = Column(Integer, ForeignKey('mentors.id'))
+#     message = Column(String)
+#     timestamp = Column(DateTime, default=datetime.utcnow)
+#     is_read = Column(Boolean, default=False)
+
+#     # Relationships to User and Mentor
+#     user = relationship("User", backref="notifications")
+#     mentor = relationship("Mentor", backref="notifications")
+    
+    
+class Notification(Base):
+    __tablename__ = 'notifications'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'))  # The user ID for both users and mentors
+    message = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    is_read = Column(Boolean, default=False)
+    
 Session = sessionmaker(bind=engine)
 
 app = Flask(__name__)
@@ -540,7 +565,7 @@ def list_streams():
 @app.route('/add_mentor', methods=['POST'])
 @jwt_required()
 def add_mentor():
-    current_user = get_jwt_identity()
+    current_user = get_jwt_identity()  # This assumes `get_jwt_identity` returns the user ID
     session = Session()
 
     data = request.get_json()
@@ -556,19 +581,23 @@ def add_mentor():
     stream_name = data.get('stream')  
     country = data.get('country')
     sender_email = data.get('sender_email')
+    user_id=data.get('user_id')
 
-    if not all([mentor_name, username, profile_photo_base64, description, highest_degree, expertise, recent_project, meeting_time, fees, stream_name, country]):
+    # Check if all required fields are present
+    if not all([mentor_name, username, profile_photo_base64, description, highest_degree, expertise, recent_project, meeting_time, fees, stream_name, country,user_id]):
         session.close()
         return jsonify({"message": "Missing mentor details"}), 400
 
-    
+    # Check if username already exists
     existing_mentor = session.query(Mentor).filter_by(username=username).first()
     if existing_mentor:
         session.close()
         return jsonify({"message": "Username already exists or data is already exists"}), 400
 
+    # Decode profile photo
     profile_photo_binary = base64.b64decode(profile_photo_base64)
 
+    # Check if stream exists
     stream = session.query(Stream).filter_by(name=stream_name).first()
     if not stream:
         session.close()
@@ -576,14 +605,25 @@ def add_mentor():
 
     # Create a new mentor with the provided details
     new_mentor = Mentor(
-        mentor_name=mentor_name, username=username, profile_photo=profile_photo_binary, description=description,
-        highest_degree=highest_degree, expertise=expertise, recent_project=recent_project,
-        meeting_time=meeting_time, fees=fees, stream_name=stream_name, country=country, verified=False
+        mentor_name=mentor_name,
+        username=username,
+        profile_photo=profile_photo_binary,
+        description=description,
+        highest_degree=highest_degree,
+        expertise=expertise,
+        recent_project=recent_project,
+        meeting_time=meeting_time,
+        fees=fees,
+        stream_name=stream_name,
+        country=country,
+        verified=False,
+        user_id=user_id  # Associate with the current logged-in user
     )
     session.add(new_mentor)
     session.commit()
     print("mentor added")
 
+    # Send verification email to admin
     msg = Message('New Mentor Verification', sender=sender_email, recipients=['admin_email@example.com'])
     msg.body = f"Please verify the new mentor:\n\nID: {new_mentor.id}\nName: {mentor_name}\nStream: {stream_name}\nCountry: {country}"
     mail.send(msg)
@@ -852,8 +892,19 @@ def all_mentors():
         return jsonify({"message": "User not found"}), 404
 
     try:
+        assigned_mentor_ids = {mentor.id for mentor in user.mentors}
+
+        # Fetch all mentors excluding those already assigned to the user
+        mentors = (
+            session.query(Mentor)
+            .filter(Mentor.id.notin_(assigned_mentor_ids))
+            .filter(Mentor.user_id != user.id)
+            .all()
+        )
+        
+        
         # Fetch all mentors without filtering by stream
-        mentors = session.query(Mentor).all()
+        # mentors = session.query(Mentor).all()
 
         app.logger.debug(f"All mentors: {mentors}")
 
@@ -872,7 +923,8 @@ def all_mentors():
                 "fees": mentor.fees,
                 "stream": mentor.stream.name,
                 "country": mentor.country,
-                "verified": mentor.verified
+                "verified": mentor.verified,
+                "user_id":mentor.user_id
             }
             mentor_list.append(mentor_info)
 
@@ -1041,6 +1093,30 @@ def verify_payment():
 
 
 
+# @app.route('/assign_mentor', methods=['POST'])
+# @jwt_required()
+# def assign_mentor():
+#     current_user = get_jwt_identity()
+#     session = Session()
+    
+#     data = request.get_json()
+#     mentor_id = data.get('mentor_id')
+#     user_id = data.get('user_id')
+
+#     mentor = session.query(Mentor).filter_by(id=mentor_id).first()
+#     user = session.query(User).filter_by(id=user_id).first()
+
+#     if not mentor or not user:
+#         session.close()
+#         return jsonify({"message": "Mentor or user not found"}), 404
+
+#     # Assign the mentor to the user
+#     user.mentors.append(mentor)
+#     session.commit()
+#     session.close()
+
+#     return jsonify({"message": f"Mentor {mentor_id} assigned to user {user_id} successfully"}), 200
+
 @app.route('/assign_mentor', methods=['POST'])
 @jwt_required()
 def assign_mentor():
@@ -1061,9 +1137,66 @@ def assign_mentor():
     # Assign the mentor to the user
     user.mentors.append(mentor)
     session.commit()
-    session.close()
 
-    return jsonify({"message": f"Mentor {mentor_id} assigned to user {user_id} successfully"}), 200
+    # Create notification message
+    notification_message_user = f"You have been assigned a mentor: {mentor.mentor_name}."
+    notification_message_mentor = f"You have been assigned to a new user: {user.username}."
+
+    # Save notifications for both user and mentor in the database using user_id
+    notification_for_user = Notification(user_id=user_id, message=notification_message_user)
+    notification_for_mentor = Notification(user_id=mentor.user_id, message=notification_message_mentor)  # Assuming mentor has a user_id attribute
+    session.add(notification_for_user)
+    session.add(notification_for_mentor)
+    session.commit()
+
+    if user_id:
+        notifications = session.query(Notification).filter_by(user_id=user_id).all()
+        notification_messages = [{
+            "message": notification.message,
+            "timestamp": notification.timestamp.isoformat(), 
+            "is_read": notification.is_read
+        } for notification in notifications]
+
+        emit('notifications', notification_messages, room=f"user_{user_id}", namespace='/')
+    # Emit real-time notification to the user and mentor via Socket.IO
+    emit('notification', {'message': notification_message_user, 'mentor_id': mentor_id, 'user_id': user_id},
+         room=f"user_{user_id}", namespace='/')
+    emit('notification', {'message': notification_message_mentor, 'mentor_id': mentor_id, 'user_id': user_id},
+         room=f"mentor_{mentor.user_id}", namespace='/')
+
+    session.close()
+    return jsonify({"message": "Mentor assigned successfully."}), 200
+
+
+@socketio.on('get_notifications')
+def handle_get_notifications(data):
+    user_id = data.get('user_id')
+    session = Session()
+    
+    if user_id:
+        
+        notifications = session.query(Notification).filter_by(user_id=user_id).all()
+        
+        
+        notification_messages = [{
+            "message": notification.message,
+            "timestamp": notification.timestamp.isoformat(), 
+            "is_read": notification.is_read
+        } for notification in notifications]
+
+       
+        emit('notifications', notification_messages, room=f"user_{user_id}")
+    else:
+        emit('notifications', {'message': 'No user ID provided'}, room=f"user_{user_id}")
+
+@socketio.on('join')
+def on_join(data):
+    user_id = data.get('user_id')
+    
+    if user_id:
+        join_room(f"user_{user_id}")
+        emit('notification', {'message': 'Joined notification room successfully.'}, room=f"user_{user_id}")
+    
 
 @app.route('/create_payment_intent', methods=['POST'])
 @jwt_required()
