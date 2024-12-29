@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean
+from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean,UniqueConstraint
 from sqlalchemy import create_engine, and_, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -20,7 +20,7 @@ from datetime import datetime
 from flask_socketio import emit
 from flask_socketio import SocketIO
 from flask_socketio import join_room
-
+from sqlalchemy.dialects.postgresql import JSONB
 import stripe
 import razorpay
 from razorpay import Client
@@ -60,6 +60,42 @@ class Stream(Base):
     name = Column(String, primary_key=True, nullable=False)
 
 
+
+#new assign mentor
+class UserMentorAssignment(Base):
+    __tablename__ = 'user_mentor_assignments'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    mentor_id = Column(Integer, ForeignKey('Newmentortable.mentor_id', ondelete='CASCADE'), nullable=False)
+    assigned_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('user_id', 'mentor_id', name='_user_mentor_uc'),)
+
+    # Relationships (optional)
+    user = relationship('User', back_populates='assignments')
+    mentor = relationship('Newmentor', back_populates='assignments') 
+
+# new mentor table
+class Newmentor(Base):
+    __tablename__ = 'Newmentortable'
+
+    mentor_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False, unique=True)
+    phone = Column(String(20))
+    linkedin = Column(String(255), nullable=False)
+    expertise = Column(String(255), nullable=False)
+    degree = Column(String(255), nullable=False)
+    background = Column(Text, nullable=False)
+    fee = Column(String(255))
+    milestones = Column(Integer, nullable=False)
+    profile_picture = Column(String(500))
+    resume = Column(String(500))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    assignments = relationship('UserMentorAssignment', back_populates='mentor')
+    
 class Mentor(Base):
     __tablename__ = 'mentors'
 
@@ -76,7 +112,7 @@ class Mentor(Base):
     stream_name = Column(String, ForeignKey('streams.name'))
     country = Column(String)
     verified = Column(Boolean, default=False)
-    user_id = Column(Integer, ForeignKey('users.id'))  # Add the user_id column as a foreign key to User
+    user_id = Column(Integer, ForeignKey('users.id'))
 
     users = relationship("User", secondary=user_mentor_association, back_populates="mentors")
     stream = relationship("Stream", backref="mentors")
@@ -97,6 +133,7 @@ class User(Base):
 
     # Establishing a Many-to-Many relationship with Mentor
     mentors = relationship("Mentor", secondary=user_mentor_association)
+    assignments = relationship('UserMentorAssignment', back_populates='user')
 
 
 class UserDetails(Base):
@@ -147,7 +184,16 @@ Base.metadata.create_all(engine)
 #     # Relationships to User and Mentor
 #     user = relationship("User", backref="notifications")
 #     mentor = relationship("Mentor", backref="notifications")
-    
+
+# mileston table 
+class UserMentorship(Base):
+    __tablename__ = 'milestone'
+
+    serial_number = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    mentor_id = Column(Integer, nullable=False)
+    milestone = Column(JSONB, nullable=False)
+     
     
 class Notification(Base):
     __tablename__ = 'notifications'
@@ -784,12 +830,12 @@ def mentors_by_stream():
                 "verified": mentor.verified
             }
             mentors_list_same_stream.append(mentor_info)
-            mentor_ids_same_stream.append(mentor.id)  # Collect mentor IDs for further lookup
+            mentor_ids_same_stream.append(mentor.id)  
 
-        # Step 2: Fetch mentors related to the mentors in the same stream, but exclude the mentors already retrieved
+        
         related_mentors = session.query(Mentor).filter(
             Mentor.users.any(User.mentors.any(Mentor.id.in_(mentor_ids_same_stream))),
-            ~Mentor.id.in_(mentor_ids_same_stream)  # Exclude mentors from mentors_with_same_stream
+            ~Mentor.id.in_(mentor_ids_same_stream)  
         ).all()
 
         mentors_list_related = []
@@ -1052,12 +1098,12 @@ def create_order():
     session = Session()
     data = request.get_json()
     mentor_id = data.get('mentor_id') 
-    mentor = session.query(Mentor).filter_by(id=mentor_id).first()
+    mentor = session.query(Newmentor).filter_by(mentor_id=mentor_id).first()
     if mentor is None:
         session.close()
         return jsonify({"message": "Mentor not found"}), 404
       
-    mentor_fees = float(mentor.fees)*100
+    mentor_fees = float(mentor.fee)*100
     
 
     payment_order = razorpay_client.order.create({
@@ -1329,6 +1375,370 @@ def get_assigned_mentors():
     return jsonify({"assigned_mentors": mentor_list}), 200
 
 
+#milstoneapi
+@app.route('/milestone', methods=['POST'])
+@jwt_required()
+def milestone():
+    current_user = get_jwt_identity()
+    
+    session = Session()
+    
+    user = session.query(User).filter_by(username=current_user).first()
+
+    if not user:
+        session.close()
+        return jsonify({"message": "User not found"}), 404
+    
+    data = request.get_json()
+    
+    # Extract user_id, mentor_id, and milestone from the request data
+    user_id = data.get('user_id')
+    mentor_id = data.get('mentor_id')
+    milestone = data.get('milestone')
+
+    user_mentorship = UserMentorship(
+        user_id=user_id,
+        mentor_id=mentor_id,
+        milestone=milestone 
+    )
+
+   
+    session.add(user_mentorship)
+    session.commit()
+    session.close()
+
+    return jsonify({"message": "User mentorship created successfully"}), 201
+
+
+# new mentor api get,post
+@app.route('/add_new_mentor', methods=['POST'])
+@jwt_required()
+def add_new_mentor():
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    # Fetch the user based on the JWT identity
+    user = session.query(User).filter_by(username=current_user).first()
+    
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+    
+    try:
+        data = request.get_json()  
+
+        
+        user_id = user.id
+        name = data.get('name')
+        email = data.get('email')
+        phone = data.get('phone', None)
+        linkedin = data.get('linkedin')
+        expertise = data.get('expertise')
+        degree = data.get('degree')
+        background = data.get('background')
+        fee = data.get('fee', None)
+        milestones = data.get('milestones')
+        profile_picture = data.get('profile_picture', None)
+        resume = data.get('resume', None)
+
+        
+        if not all([user_id, name, email, linkedin, expertise, degree, background, milestones]):
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        
+        new_mentor = Newmentor(
+            user_id=user_id,
+            name=name,
+            email=email,
+            phone=phone,
+            linkedin=linkedin,
+            expertise=expertise,
+            degree=degree,
+            background=background,
+            fee=fee,
+            milestones=milestones,
+            profile_picture=profile_picture,
+            resume=resume
+        )
+
+       
+        session.add(new_mentor)
+        session.commit()
+
+        return jsonify({'message': 'New mentor added successfully', 'mentor_id': new_mentor.mentor_id}), 201
+
+    except IntegrityError:
+        session.rollback()
+        return jsonify({'error': 'Email already exists'}), 400
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    
+    
+#mentor assign
+@app.route('/new_assign_mentor', methods=['POST'])
+@jwt_required()
+def new_assign_mentor():
+    current_user = get_jwt_identity()
+    session = Session()
+
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        mentor_id = data.get('mentor_id')
+
+        if not all([user_id, mentor_id]):
+            return jsonify({'error': 'Missing required fields'}), 400
+
+        # Validate the user and mentor
+        user = session.query(User).filter_by(id=user_id).first()
+        mentor = session.query(Newmentor).filter_by(mentor_id=mentor_id).first()
+
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        if not mentor:
+            return jsonify({'error': 'Mentor not found'}), 404
+
+        # Check if the assignment already exists
+        existing_assignment = session.query(UserMentorAssignment).filter_by(user_id=user_id, mentor_id=mentor_id).first()
+        if existing_assignment:
+            return jsonify({'error': 'User is already assigned to this mentor'}), 400
+
+        # Assign mentor to user
+        new_assignment = UserMentorAssignment(user_id=user_id, mentor_id=mentor_id)
+        session.add(new_assignment)
+
+        # Save notifications
+        notification_message_user = f"You have been assigned a mentor: {mentor.name}."
+        notification_message_mentor = f"You have been assigned to a new user: {user.username}."
+
+        notification_for_user = Notification(user_id=user_id, message=notification_message_user)
+        notification_for_mentor = Notification(user_id=mentor.user_id, message=notification_message_mentor)
+        session.add(notification_for_user)
+        session.add(notification_for_mentor)
+        session.commit()
+
+        # Emit notifications via Socket.IO
+        user_notifications = session.query(Notification).filter_by(user_id=user_id).all()
+        user_notification_data = [{
+            "message": n.message,
+            "timestamp": n.timestamp.isoformat(),
+            "is_read": n.is_read
+        } for n in user_notifications]
+
+        # Emit notifications to the user
+        socketio.emit('notifications', user_notification_data, room=f"user_{user_id}", namespace='/')
+
+        # Emit real-time notifications to both user and mentor
+        socketio.emit('notification', {'message': notification_message_user, 'mentor_id': mentor_id, 'user_id': user_id},
+                      room=f"user_{user_id}", namespace='/')
+        socketio.emit('notification', {'message': notification_message_mentor, 'mentor_id': mentor_id, 'user_id': user_id},
+                      room=f"mentor_{mentor.user_id}", namespace='/')
+
+        return jsonify({"message": "Mentor assigned successfully."}), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+#get mentor list
+@app.route('/get_assigned_mentors', methods=['GET'])
+@jwt_required()
+def get_assigned_mentors_list():
+    current_user = get_jwt_identity()  # Get the identity from JWT (likely an email)
+    session = Session()
+
+    try:
+        # Fetch user ID using the email (if JWT stores email)
+        user = session.query(User).filter_by(username=current_user).first()
+
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        user_id = user.id
+
+        # Query the assignments for the logged-in user
+        assignments = session.query(UserMentorAssignment).filter_by(user_id=user_id).all()
+
+        if not assignments:
+            return jsonify({'message': 'No mentors assigned to this user'}), 404
+
+        # Retrieve mentor details for the assignments
+        mentors = [
+            {
+                "mentor_id": assignment.mentor.mentor_id,
+                "name": assignment.mentor.name,
+                "email": assignment.mentor.email,
+                "phone": assignment.mentor.phone,
+                "linkedin": assignment.mentor.linkedin,
+                "expertise": assignment.mentor.expertise,
+                "degree": assignment.mentor.degree,
+                "background": assignment.mentor.background,
+                "fee": assignment.mentor.fee,
+                "milestones": assignment.mentor.milestones,
+                "profile_picture": assignment.mentor.profile_picture,
+                "resume": assignment.mentor.resume,
+            }
+            for assignment in assignments
+        ]
+
+        return jsonify({"mentors": mentors}), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
+
+
+@app.route('/recommended_mentors', methods=['GET'])
+@jwt_required()
+def get_recommended_mentors():
+    session = Session()
+    try:
+        # Fetch the current user based on the JWT token
+        current_user = get_jwt_identity()
+        user = session.query(User).filter_by(username=current_user).first()
+
+        if not user:
+            return jsonify({"message": "User not found"}), 404
+
+        # Fetch the user's stream name from UserDetails
+        user_details = user.details  # Access the UserDetails relationship
+        if not user_details or not user_details.stream_name:
+            return jsonify({"error": "User's stream not found"}), 400
+
+        stream = user_details.stream_name  # Extract the user's stream name
+
+        # Fetch all mentors, excluding the current user's profile
+        mentors = session.query(Newmentor).filter(
+            Newmentor.user_id != user.id
+        ).all()
+
+        if not mentors:
+            return jsonify({"message": "No mentors found"}), 404
+
+        # Add recommendation priority
+        def recommendation_priority(mentor):
+            if mentor.expertise.lower() == stream.lower():
+                return 1  # Exact match
+            elif stream.lower() in mentor.expertise.lower():
+                return 2  # Partial match
+            else:
+                return 3  # No match
+
+        # Sort mentors based on the recommendation priority
+        sorted_mentors = sorted(mentors, key=recommendation_priority)
+
+        # Format the response
+        mentors_list = [
+            {
+                "mentor_id": mentor.mentor_id,
+                "name": mentor.name,
+                "email": mentor.email,
+                "phone": mentor.phone,
+                "linkedin": mentor.linkedin,
+                "expertise": mentor.expertise,
+                "degree": mentor.degree,
+                "background": mentor.background,
+                "fee": mentor.fee,
+                "milestones": mentor.milestones,
+                "profile_picture": mentor.profile_picture,
+                "resume": mentor.resume,
+                "created_at": mentor.created_at
+            }
+            for mentor in sorted_mentors
+        ]
+
+        return jsonify({"mentors": mentors_list}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        session.close()
+
+
+# @app.route('/recommended_mentors', methods=['GET'])
+# @jwt_required()
+# def get_recommended_mentors():
+#     session = Session()
+#     try:
+#         # Fetch the current user based on the JWT token
+#         current_user = get_jwt_identity()
+#         user = session.query(User).filter_by(username=current_user).first()
+
+#         if not user:
+#             return jsonify({"message": "User not found"}), 404
+
+#         # Fetch the user's stream name from UserDetails
+#         user_details = user.details  # Access the UserDetails relationship
+#         if not user_details or not user_details.stream_name:
+#             return jsonify({"error": "User's stream not found"}), 400
+
+#         stream = user_details.stream_name  # Extract the user's stream name
+
+#         # Fetch all assigned mentor IDs for the current user
+#         assigned_mentor_ids = session.query(UserMentorAssignment.mentor_id).filter_by(user_id=user.id).all()
+#         assigned_mentor_ids = {row[0] for row in assigned_mentor_ids}  # Convert to a set of mentor IDs
+
+#         # Fetch all mentors excluding the assigned mentors, the current user's profile, and where the logged-in user is also a mentor
+#         mentors = session.query(Newmentor).filter(
+#             Newmentor.user_id != user.id,  # Exclude logged-in user as a mentor
+#             ~Newmentor.mentor_id.in_(assigned_mentor_ids)  # Exclude already assigned mentors
+#         ).all()
+
+#         # Add recommendation priority
+#         def recommendation_priority(mentor):
+#             if mentor.expertise.lower() == stream.lower():
+#                 return 1  # Exact match
+#             elif stream.lower() in mentor.expertise.lower():
+#                 return 2  # Partial match
+#             else:
+#                 return 3  # No match
+
+#         # Sort mentors based on the recommendation priority
+#         sorted_mentors = sorted(mentors, key=recommendation_priority)
+
+#         # Format the response
+#         mentors_list = [
+#             {
+#                 "mentor_id": mentor.mentor_id,
+#                 "name": mentor.name,
+#                 "email": mentor.email,
+#                 "phone": mentor.phone,
+#                 "linkedin": mentor.linkedin,
+#                 "expertise": mentor.expertise,
+#                 "degree": mentor.degree,
+#                 "background": mentor.background,
+#                 "fee": mentor.fee,
+#                 "milestones": mentor.milestones,
+#                 "profile_picture": mentor.profile_picture,
+#                 "resume": mentor.resume,
+#                 "created_at": mentor.created_at
+#             }
+#             for mentor in sorted_mentors
+#         ]
+
+#         return jsonify({"mentors": mentors_list}), 200
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+#     finally:
+#         session.close()
+
+
+
+
+
+
+
 
 @app.route('/assigned_users', methods=['GET'])
 @jwt_required()
@@ -1480,6 +1890,10 @@ def delete_mentors():
     session.close()
 
     return jsonify({"message": "All mentors deleted successfully"}), 200
+
+
+
+
 
 
 if __name__ == '__main__':
