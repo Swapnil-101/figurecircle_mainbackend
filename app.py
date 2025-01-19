@@ -814,17 +814,19 @@ def get_schedules():
             "id": s.id,
             "name": s.name,
             "email": s.email,
-            "start_date": s.start_date.isoformat(),
-            "end_date": s.end_date.isoformat(),
+            "start_datetime": s.start_datetime.isoformat(),
+            "end_datetime": s.end_datetime.isoformat(),
+            "link": s.link,
             "created_at": s.created_at.isoformat(),
-            "user_id": s.user_id,
-            "mentor_id": s.mentor_id
+            "mentor_id": s.mentor_id,
+            "mentor_name": s.mentor_name,
+            "mentor_email": s.mentor_email,
+            "user_id": s.user_id
         } for s in schedules]), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 400
     finally:
         session.close()
-
 
 
 # @app.route('/mentors_by_stream', methods=['GET'])
