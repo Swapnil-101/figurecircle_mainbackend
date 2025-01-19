@@ -26,7 +26,7 @@ import razorpay
 from razorpay import Client
 
 
-
+CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
 
 
@@ -203,6 +203,26 @@ class Notification(Base):
     message = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
     is_read = Column(Boolean, default=False)
+    
+    
+    
+#meeting class
+class Schedule(Base):
+    __tablename__ = 'schedules'
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    start_datetime = Column(DateTime, nullable=False)  # Combined field
+    end_datetime = Column(DateTime, nullable=False)    # Combined field
+    link = Column(String, nullable=True)              # Optional field
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Mentor details
+    mentor_id = Column(Integer, nullable=False)
+    mentor_name = Column(String, nullable=False)
+    mentor_email = Column(String, nullable=False)
+    user_id = Column(Integer, nullable=False)
     
 Session = sessionmaker(bind=engine)
 
@@ -730,6 +750,81 @@ def update_mentor(mentor_id):
     session.close()
 
     return jsonify({"message": "Mentor details updated successfully"}), 200
+
+
+#Calendly APIs
+@app.route('/api/schedule', methods=['POST'])
+def create_schedule():
+    session = Session()
+    data = request.json
+
+    try:
+        # Extract data from the request
+        name = data.get('name')
+        email = data.get('email')
+        start_datetime = datetime.fromisoformat(data.get('start_datetime'))
+        end_datetime = datetime.fromisoformat(data.get('end_datetime'))
+        link = data.get('link')
+        user_id = data.get('user_id')
+        mentor_id = data.get('mentor_id')
+        mentor_name = data.get('mentor_name')
+        mentor_email = data.get('mentor_email')
+
+        # Validate required fields
+        if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime]):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        # Create a new schedule entry
+        schedule = Schedule(
+            name=name,
+            email=email,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            link=link,
+            user_id=user_id,
+            mentor_id=mentor_id,
+            mentor_name=mentor_name,
+            mentor_email=mentor_email
+        )
+        session.add(schedule)
+        session.commit()
+
+        return jsonify({"message": "Schedule created successfully!", "id": schedule.id}), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 400
+    finally:
+        session.close()
+
+
+  
+@app.route('/api/schedules', methods=['GET'])
+def get_schedules():
+    session = Session()
+
+    try:
+        # Get user_id from query parameters
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+
+        # Retrieve schedules filtered by the provided user_id
+        schedules = session.query(Schedule).filter(Schedule.user_id == user_id).all()
+        return jsonify([{
+            "id": s.id,
+            "name": s.name,
+            "email": s.email,
+            "start_date": s.start_date.isoformat(),
+            "end_date": s.end_date.isoformat(),
+            "created_at": s.created_at.isoformat(),
+            "user_id": s.user_id,
+            "mentor_id": s.mentor_id
+        } for s in schedules]), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        session.close()
+
 
 
 # @app.route('/mentors_by_stream', methods=['GET'])
