@@ -483,6 +483,38 @@ def user_details():
             return jsonify({"message": f"Failed to add/update user details: {str(e)}"}), 500
 
 
+@app.route('/api/mentor/details', methods=['GET'])
+def get_mentor_details():
+    session = Session()
+    try:
+        user_id = request.args.get('user_id')
+        if not user_id:
+            return jsonify({"error": "user_id is required"}), 400
+        mentor = session.query(Newmentor).filter(Newmentor.user_id == user_id).first()
+        if not mentor:
+            return jsonify({"error": "No mentor found for the given user_id"}), 404
+        return jsonify({
+            "mentor_id": mentor.mentor_id,
+            "user_id": mentor.user_id,
+            "name": mentor.name,
+            "email": mentor.email,
+            "phone": mentor.phone,
+            "linkedin": mentor.linkedin,
+            "expertise": mentor.expertise,
+            "degree": mentor.degree,
+            "background": mentor.background,
+            "fee": mentor.fee,
+            "milestones": mentor.milestones,
+            "profile_picture": mentor.profile_picture,
+            "resume": mentor.resume,
+            "created_at": mentor.created_at.isoformat() if mentor.created_at else None
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
 @app.route('/update_user_details_diff', methods=['POST'])
 @jwt_required()
 def update_user_details_diff():
@@ -803,13 +835,23 @@ def get_schedules():
     session = Session()
 
     try:
-        # Get user_id from query parameters
+        # Get user_id and mentor_id from query parameters
         user_id = request.args.get('user_id')
-        if not user_id:
-            return jsonify({"error": "user_id is required"}), 400
+        mentor_id = request.args.get('mentor_id')
 
-        # Retrieve schedules filtered by the provided user_id
-        schedules = session.query(Schedule).filter(Schedule.user_id == user_id).all()
+        if not user_id and not mentor_id:
+            return jsonify({"error": "Either user_id or mentor_id is required"}), 400
+
+        # Retrieve schedules with user_id first
+        schedules = []
+        if user_id:
+            schedules = session.query(Schedule).filter(Schedule.user_id == user_id).all()
+
+        # If no schedules are found, search with mentor_id
+        if not schedules and mentor_id:
+            schedules = session.query(Schedule).filter(Schedule.mentor_id == mentor_id).all()
+
+        # Return the results
         return jsonify([{
             "id": s.id,
             "name": s.name,
@@ -827,6 +869,8 @@ def get_schedules():
         return jsonify({"error": str(e)}), 400
     finally:
         session.close()
+
+
 
 
 # @app.route('/mentors_by_stream', methods=['GET'])
@@ -1987,10 +2031,6 @@ def delete_mentors():
     session.close()
 
     return jsonify({"message": "All mentors deleted successfully"}), 200
-
-
-
-
 
 
 if __name__ == '__main__':
