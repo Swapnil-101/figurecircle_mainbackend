@@ -96,6 +96,17 @@ class Newmentor(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     assignments = relationship('UserMentorAssignment', back_populates='mentor')
     
+class Information(Base):
+    __tablename__ = 'information'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)  # Add this line
+    bachelors_degree = Column(String(255), nullable=True)
+    masters_degree = Column(String(255), nullable=True)
+    certifications = Column(Text, nullable=True)
+    primary_expertise_area = Column(String(255), nullable=True)
+    highest_degree_achieved = Column(String(255), nullable=True)
+
+    
 class Mentor(Base):
     __tablename__ = 'mentors'
 
@@ -1229,6 +1240,126 @@ def get_unverified_mentors():
     session.close()
 
     return jsonify({"unverified_mentors": mentor_list}), 200
+
+
+#inforamtion apis
+@app.route('/get_information', methods=['POST'])
+@jwt_required()
+def get_information():
+    """
+    Fetches and returns filtered information based on user input.
+    
+    The request body should be a dictionary with column names as keys and 
+    boolean values (true/false) to indicate which columns to retrieve.
+    """
+    data = request.json
+
+    # Define all possible fields
+    possible_fields = {
+        "bachelors_degree": Information.bachelors_degree,
+        "masters_degree": Information.masters_degree,
+        "certifications": Information.certifications,
+        "primary_expertise_area": Information.primary_expertise_area,
+        "highest_degree_achieved": Information.highest_degree_achieved
+    }
+
+    # Validate and filter requested fields
+    if not data or not isinstance(data, dict):
+        return jsonify({"message": "Invalid request format. Expected a JSON object with boolean values."}), 400
+
+    selected_field_names = [field for field, include in data.items() if include and field in possible_fields]
+
+    if not selected_field_names:
+        return jsonify({"message": "No valid fields selected"}), 400
+
+    selected_columns = [possible_fields[field] for field in selected_field_names]
+
+    session = Session()
+    try:
+        # Fetch only the selected columns
+        query = session.query(*selected_columns)
+        rows = query.all()
+
+        # Transform the data into the required format
+        response_data = {field: [] for field in selected_field_names}
+        for row in rows:
+            for field in selected_field_names:
+                response_data[field].append(getattr(row, field))
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching information: {str(e)}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+    finally:
+        session.close()
+
+# post api
+@app.route('/update_information', methods=['POST'])
+@jwt_required()
+def update_information():
+    """
+    Updates an existing record in the 'Information' table if a NULL field exists.
+    If no such row exists, a new record is inserted.
+
+    Example request body:
+    {
+        "masters_degree": "MCA",
+        "certifications": "AWS Certified",
+        "primary_expertise_area": "AI & ML",
+        "highest_degree_achieved": "PhD"
+    }
+
+    Logic:
+    - If a row with NULL in any of the provided fields exists, update it.
+    - Otherwise, insert a new record.
+    """
+    data = request.json
+    if not data or not isinstance(data, dict):
+        return jsonify({"message": "Invalid request format. Expected a JSON object."}), 400
+
+    session = Session()
+    try:
+        # Validate if all fields exist in the model
+        valid_fields = ["bachelors_degree", "masters_degree", "certifications", "primary_expertise_area", "highest_degree_achieved"]
+        update_fields = {key: value for key, value in data.items() if key in valid_fields}
+
+        if not update_fields:
+            return jsonify({"message": "No valid fields provided"}), 400
+
+        # Find the first row where ANY of these fields is NULL
+        existing_entry = session.query(Information).filter(
+            or_(*[getattr(Information, field).is_(None) for field in update_fields])
+        ).first()
+
+        if existing_entry:
+            # Update only the fields provided in the request
+            for field, value in update_fields.items():
+                setattr(existing_entry, field, value)
+
+            session.commit()
+            return jsonify({"message": "Record updated successfully"}), 200
+        else:
+            # If no existing row with NULL found, insert a new record
+            new_entry = Information(**update_fields)
+            session.add(new_entry)
+            session.commit()
+            return jsonify({"message": "New record inserted"}), 201
+
+    except Exception as e:
+        session.rollback()
+        app.logger.error(f"Error in insert/update: {str(e)}")
+        return jsonify({"error": "An internal server error occurred"}), 500
+
+    finally:
+        session.close()
+
+
+
+
+
+
 
 
 
