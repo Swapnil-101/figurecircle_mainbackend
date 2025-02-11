@@ -429,7 +429,7 @@ def admin_login():
     session.close()
     return jsonify({"access_token": access_token}), 200
 
-@app.route('/user_details', methods=['GET', 'POST'])
+@app.route('/user_details', methods=['GET', 'POST', 'PUT'])
 @jwt_required()
 def user_details():
     current_user = get_jwt_identity()
@@ -455,7 +455,7 @@ def user_details():
                 "certification": user_details.certification,
                 "activity": user_details.activity,
                 "country": user_details.country,
-                "stream_name": user_details.stream_name, 
+                "stream_name": user_details.stream_name,
                 "data_filled": user_details.data_filled
             }
             return jsonify(user_details_dict), 200
@@ -467,7 +467,7 @@ def user_details():
 
         if user.details and user.details.data_filled:
             session.close()
-            return jsonify({"message": "User details already exist"}), 400
+            return jsonify({"message": "User details already exist. Use PUT to update."}), 400
 
         if not user.details:
             user.details = UserDetails(user=user)
@@ -478,21 +478,46 @@ def user_details():
         user.details.bachelors_degree = data.get('bachelors_degree', user.details.bachelors_degree)
         user.details.masters_degree = data.get('masters_degree', user.details.masters_degree)
         user.details.certification = data.get('certification', user.details.certification)
-        user.details.activity = data.get('activity', user.details.activity)
         user.details.country = data.get('country', user.details.country)
-        user.details.stream_name = data.get('stream_name', user.details.stream_name) 
+        user.details.activity = data.get('activity', user.details.activity)
+        user.details.stream_name = data.get('stream_name', user.details.stream_name)
 
         user.details.data_filled = True
 
         try:
             session.commit()
             session.close()
-            return jsonify({"message": "User details added/updated successfully"}), 200
+            return jsonify({"message": "User details added successfully"}), 200
         except Exception as e:
             session.rollback()
             session.close()
-            return jsonify({"message": f"Failed to add/update user details: {str(e)}"}), 500
+            return jsonify({"message": f"Failed to add user details: {str(e)}"}), 500
 
+    elif request.method == 'PUT':
+        data = request.get_json()
+
+        if not user.details:
+            session.close()
+            return jsonify({"message": "User details not found. Use POST to create."}), 400
+
+        user.details.first_name = data.get('first_name', user.details.first_name)
+        user.details.last_name = data.get('last_name', user.details.last_name)
+        user.details.school_name = data.get('school_name', user.details.school_name)
+        user.details.bachelors_degree = data.get('bachelors_degree', user.details.bachelors_degree)
+        user.details.masters_degree = data.get('masters_degree', user.details.masters_degree)
+        user.details.certification = data.get('certification', user.details.certification)
+        user.details.country = data.get('country', user.details.country)
+        user.details.activity = data.get('activity', user.details.activity)
+        user.details.stream_name = data.get('stream_name', user.details.stream_name)
+
+        try:
+            session.commit()
+            session.close()
+            return jsonify({"message": "User details updated successfully"}), 200
+        except Exception as e:
+            session.rollback()
+            session.close()
+            return jsonify({"message": f"Failed to update user details: {str(e)}"}), 500
 
 @app.route('/api/mentor/details', methods=['GET'])
 def get_mentor_details():
@@ -1355,7 +1380,20 @@ def update_information():
     finally:
         session.close()
 
-
+# @app.route('/check_username', methods=['POST'])
+# @jwt_required()
+# def check_username():
+#     data = request.get_json()
+#     username = data.get('username')
+    
+#     if not username:
+#         return jsonify({"error": "Username is required"}), 400
+    
+#     session = Session()
+#     user_exists = session.query(UserDetails).filter_by(username=username).first() is not None
+#     session.close()
+    
+#     return jsonify({"exists": user_exists})
 
 
 
