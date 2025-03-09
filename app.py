@@ -129,7 +129,19 @@ class Mentor(Base):
     stream = relationship("Stream", backref="mentors")
 
     
+class Feedback(Base):
+    __tablename__ = 'feedback'
 
+    feedback_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, nullable=False)
+    mentor_id = Column(Integer, nullable=False)
+    milestone = Column(String(255), nullable=False)
+    milestone_achieved = Column(Boolean, nullable=False)
+    next_steps_identified = Column(Boolean, nullable=False)
+    progress_rating = Column(Integer, nullable=False)
+    mentor_responsibility = Column(Boolean, nullable=False)
+    user_responsibility = Column(Boolean, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class User(Base):
     __tablename__ = 'users'
@@ -234,6 +246,7 @@ class Schedule(Base):
     mentor_name = Column(String, nullable=False)
     mentor_email = Column(String, nullable=False)
     user_id = Column(Integer, nullable=False)
+    duration = Column(Integer, nullable=False)
     
 Session = sessionmaker(bind=engine)
 
@@ -551,6 +564,29 @@ def get_mentor_details():
         session.close()
 
 
+# check mentor 
+@app.route('/api/check_user', methods=['GET'])
+def check_user():
+    user_id = request.args.get('user_id')  # Get user_id from query params
+
+    if not user_id:
+        return jsonify({"error": "user_id is required"}), 400
+
+    try:
+        user_id = int(user_id)  # Convert to integer
+    except ValueError:
+        return jsonify({"error": "Invalid user_id"}), 400
+
+    # Check if user_id exists in the table
+    mentor = Newmentor.query.filter_by(user_id=user_id).first()
+
+    if mentor:
+        return jsonify({"exists": True, "message": "User ID found in the database"}), 200
+    else:
+        return jsonify({"exists": False, "message": "User ID not found"}), 404
+    
+    
+
 @app.route('/update_user_details_diff', methods=['POST'])
 @jwt_required()
 def update_user_details_diff():
@@ -837,9 +873,10 @@ def create_schedule():
         mentor_id = data.get('mentor_id')
         mentor_name = data.get('mentor_name')
         mentor_email = data.get('mentor_email')
+        duration =data.get('duration')
 
         # Validate required fields
-        if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime]):
+        if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime,duration]):
             return jsonify({"error": "Missing required fields"}), 400
 
         # Create a new schedule entry
@@ -852,7 +889,8 @@ def create_schedule():
             user_id=user_id,
             mentor_id=mentor_id,
             mentor_name=mentor_name,
-            mentor_email=mentor_email
+            mentor_email=mentor_email,
+            duration=duration
         )
         session.add(schedule)
         session.commit()
@@ -899,10 +937,77 @@ def get_schedules():
             "mentor_id": s.mentor_id,
             "mentor_name": s.mentor_name,
             "mentor_email": s.mentor_email,
-            "user_id": s.user_id
+            "user_id": s.user_id,
+            "duration": s.duration
         } for s in schedules]), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+    finally:
+        session.close()
+
+
+
+# GET all feedback
+@app.route('/feedback', methods=['GET'])
+def get_feedback():
+    user_id = request.args.get('user_id')  # Get user_id from query params
+    session = Session()
+    
+    
+# user = session.query(User).filter_by(username=current_user).first()
+    if user_id:
+        feedback_list = session.query(Feedback).filter_by(user_id=user_id).all()
+
+    feedback_data = [
+        {
+            'feedback_id': f.feedback_id,
+            'user_id': f.user_id,
+            'mentor_id': f.mentor_id,
+            'milestone': f.milestone,
+            'milestone_achieved': f.milestone_achieved,
+            'next_steps_identified': f.next_steps_identified,
+            'progress_rating': f.progress_rating,
+            'mentor_responsibility': f.mentor_responsibility,
+            'user_responsibility': f.user_responsibility,
+            'created_at': f.created_at
+        } for f in feedback_list
+    ]
+
+    return jsonify(feedback_data), 200
+
+# POST new feedback
+@app.route('/feedback', methods=['POST'])
+def add_feedback():
+    session = Session()
+    data = request.json
+
+    # Validate request data
+    required_fields = ['user_id', 'mentor_id', 'milestone', 'milestone_achieved', 
+                       'next_steps_identified', 'progress_rating', 'mentor_responsibility', 
+                       'user_responsibility']
+
+    missing_fields = [field for field in required_fields if data.get(field) is None]
+    if missing_fields:
+        return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+
+    try:
+        new_feedback = Feedback(
+            user_id=data['user_id'],
+            mentor_id=data['mentor_id'],
+            milestone=data['milestone'],
+            milestone_achieved=data['milestone_achieved'],
+            next_steps_identified=data['next_steps_identified'],
+            progress_rating=data['progress_rating'],
+            mentor_responsibility=data['mentor_responsibility'],
+            user_responsibility=data['user_responsibility'],
+        )
+
+        session.add(new_feedback)
+        session.commit()
+        return jsonify({'message': 'Feedback added successfully', 'feedback_id': new_feedback.feedback_id}), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
     finally:
         session.close()
 
