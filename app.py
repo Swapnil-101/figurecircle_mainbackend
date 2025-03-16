@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 import stripe
 import razorpay
 from razorpay import Client
-
+from datetime import datetime, timedelta
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -141,6 +141,8 @@ class Feedback(Base):
     progress_rating = Column(Integer, nullable=False)
     mentor_responsibility = Column(Boolean, nullable=False)
     user_responsibility = Column(Boolean, nullable=False)
+    check_id = Column(Integer, nullable=True)  # New field
+    check_meeting_id = Column(Integer, nullable=True)  # New field
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class User(Base):
@@ -946,17 +948,88 @@ def get_schedules():
         session.close()
 
 
+# check user api meeting after meeting
+@app.route('/api/validMeeting/<int:schedule_id>', methods=['GET'])
+def get_schedule(schedule_id):
+    session = Session()
+    
+    # Search for the schedule where the link contains "/v2/meetingcall/<schedule_id>"
+    schedule = session.query(Schedule).filter(Schedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
+    session.close()
+
+    if not schedule:
+        return jsonify({"error": "Schedule not found"}), 404
+
+    try:
+        # Convert duration to an integer
+        duration_minutes = int(schedule.duration)
+    except ValueError:
+        return jsonify({"error": "Invalid duration format. Duration should be a number."}), 400
+
+    # Calculate meeting expiration time (start_datetime + duration + 30 minutes)
+    meeting_end_time = schedule.start_datetime + timedelta(minutes=duration_minutes + 30)
+    current_time = datetime.utcnow()
+
+    if current_time > meeting_end_time:
+        return jsonify({"error": "Sorry, you can't submit the form. The submit time has expired. please contact to admin"}), 403
+
+    return jsonify({
+        "id": schedule.id,
+        "name": schedule.name,
+        "email": schedule.email,
+        "start_datetime": schedule.start_datetime.isoformat(),
+        "end_datetime": schedule.end_datetime.isoformat(),
+        "link": schedule.link,
+        "created_at": schedule.created_at.isoformat(),
+        "mentor_id": schedule.mentor_id,
+        "mentor_name": schedule.mentor_name,
+        "mentor_email": schedule.mentor_email,
+        "user_id": schedule.user_id,
+        "duration": schedule.duration,
+        "start_param": schedule.link  # Assuming 'link' column stores the 'start' value
+    })
+
+
+@app.route('/api/milestonevalidMeeting/<int:schedule_id>', methods=['GET'])
+def get_schedule_milestone(schedule_id):
+    session = Session()
+    schedule = session.query(Schedule).filter(Schedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
+    session.close()
+
+    if not schedule:
+        return jsonify({"error": "Schedule not found"}), 404
+
+    return jsonify({
+        "id": schedule.id,
+        "name": schedule.name,
+        "email": schedule.email,
+        "start_datetime": schedule.start_datetime.isoformat(),
+        "end_datetime": schedule.end_datetime.isoformat(),
+        "link": schedule.link,
+        "created_at": schedule.created_at.isoformat(),
+        "mentor_id": schedule.mentor_id,
+        "mentor_name": schedule.mentor_name,
+        "mentor_email": schedule.mentor_email,
+        "user_id": schedule.user_id,
+        "duration": schedule.duration,
+        "start_param": schedule.link 
+    })
 
 # GET all feedback
 @app.route('/feedback', methods=['GET'])
 def get_feedback():
     user_id = request.args.get('user_id')  # Get user_id from query params
+    mentor_id = request.args.get('mentor_id')  # Get mentor_id from query params
     session = Session()
-    
-    
-# user = session.query(User).filter_by(username=current_user).first()
-    if user_id:
-        feedback_list = session.query(Feedback).filter_by(user_id=user_id).all()
+
+    # Ensure at least one identifier is provided
+    if not user_id and not mentor_id:
+        return jsonify({'error': 'Missing user_id or mentor_id parameter'}), 400
+
+    # Query feedback based on either user_id or mentor_id
+    feedback_list = session.query(Feedback).filter(
+        (Feedback.user_id == user_id) | (Feedback.mentor_id == mentor_id)
+    ).all()
 
     feedback_data = [
         {
@@ -969,6 +1042,8 @@ def get_feedback():
             'progress_rating': f.progress_rating,
             'mentor_responsibility': f.mentor_responsibility,
             'user_responsibility': f.user_responsibility,
+            'check_id': f.check_id,
+            'check_meeting_id': f.check_meeting_id,
             'created_at': f.created_at
         } for f in feedback_list
     ]
@@ -984,13 +1059,23 @@ def add_feedback():
     # Validate request data
     required_fields = ['user_id', 'mentor_id', 'milestone', 'milestone_achieved', 
                        'next_steps_identified', 'progress_rating', 'mentor_responsibility', 
-                       'user_responsibility']
+                       'user_responsibility', 'check_id', 'check_meeting_id']
 
     missing_fields = [field for field in required_fields if data.get(field) is None]
     if missing_fields:
         return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
 
     try:
+        # Check if feedback already exists for the given check_id and check_meeting_id
+        existing_feedback = session.query(Feedback).filter_by(
+            check_id=data['check_id'], 
+            check_meeting_id=data['check_meeting_id']
+        ).first()
+
+        if existing_feedback:
+            return jsonify({'error': 'Feedback already submitted for this check_id and check_meeting_id'}), 400
+
+        # Create new feedback entry
         new_feedback = Feedback(
             user_id=data['user_id'],
             mentor_id=data['mentor_id'],
@@ -1000,6 +1085,8 @@ def add_feedback():
             progress_rating=data['progress_rating'],
             mentor_responsibility=data['mentor_responsibility'],
             user_responsibility=data['user_responsibility'],
+            check_id=data['check_id'],  # New field
+            check_meeting_id=data['check_meeting_id']  # New field
         )
 
         session.add(new_feedback)
@@ -1010,6 +1097,7 @@ def add_feedback():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
 
 
 
