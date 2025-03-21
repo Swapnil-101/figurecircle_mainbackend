@@ -144,6 +144,17 @@ class Feedback(Base):
     check_id = Column(Integer, nullable=True)  # New field
     check_meeting_id = Column(Integer, nullable=True)  # New field
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+class UserMentorship(Base):
+    __tablename__ = 'milestone'
+
+    serial_number = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    mentor_id = Column(Integer, nullable=False)
+    milestone = Column(JSONB, nullable=False)
+    check_id = Column(Integer, nullable=True)  # New field
+    check_meeting_id = Column(Integer, nullable=True)  # New field
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class User(Base):
     __tablename__ = 'users'
@@ -211,13 +222,7 @@ Base.metadata.create_all(engine)
 #     mentor = relationship("Mentor", backref="notifications")
 
 # mileston table 
-class UserMentorship(Base):
-    __tablename__ = 'milestone'
 
-    serial_number = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, nullable=False)
-    mentor_id = Column(Integer, nullable=False)
-    milestone = Column(JSONB, nullable=False)
      
     
 class Notification(Base):
@@ -1015,6 +1020,36 @@ def get_schedule_milestone(schedule_id):
         "start_param": schedule.link 
     })
 
+# check with link and get the meeting detials
+@app.route('/api/validMeeting', methods=['GET'])
+def get_schedule_by_link():
+    session = Session()
+    link = request.args.get('link')
+
+    if not link:
+        return jsonify({"error": "link is required"}), 400
+
+    schedule = session.query(Schedule).filter_by(link=link).first()
+    session.close()
+
+    if not schedule:
+        return jsonify({"error": "Schedule not found"}), 404
+
+    return jsonify({
+        "id": schedule.id,
+        "name": schedule.name,
+        "email": schedule.email,
+        "start_datetime": schedule.start_datetime.isoformat(),
+        "end_datetime": schedule.end_datetime.isoformat(),
+        "link": schedule.link,
+        "created_at": schedule.created_at.isoformat(),
+        "mentor_id": schedule.mentor_id,
+        "mentor_name": schedule.mentor_name,
+        "mentor_email": schedule.mentor_email,
+        "user_id": schedule.user_id,
+        "duration": schedule.duration
+    })
+    
 # GET all feedback
 @app.route('/feedback', methods=['GET'])
 def get_feedback():
@@ -1883,34 +1918,182 @@ def get_assigned_mentors():
 @jwt_required()
 def milestone():
     current_user = get_jwt_identity()
-    
     session = Session()
     
-    user = session.query(User).filter_by(username=current_user).first()
+    try:
+        # Check if the user exists
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({"message": "User not found"}), 404
+        
+        data = request.get_json()
 
-    if not user:
+        # Validate required fields
+        required_fields = ['user_id', 'mentor_id', 'milestone', 'check_meeting_id', 'check_id']
+        missing_fields = [field for field in required_fields if data.get(field) is None]
+        if missing_fields:
+            return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+        
+        user_id = data['user_id']
+        mentor_id = data['mentor_id']
+        milestone = data['milestone']
+        check_meeting_id = data['check_meeting_id']
+        check_id = data['check_id']
+
+        # Check if the milestone entry already exists for the given check_id and check_meeting_id
+        existing_entry = session.query(UserMentorship).filter_by(
+            check_id=check_id,
+            check_meeting_id=check_meeting_id
+        ).first()
+
+        if existing_entry:
+            return jsonify({"error": "Milestone already submitted for this check_id and check_meeting_id"}), 400
+
+        # Create new milestone entry
+        new_milestone = UserMentorship(
+            user_id=user_id,
+            mentor_id=mentor_id,
+            milestone=milestone,
+            check_meeting_id=check_meeting_id,
+            check_id=check_id
+        )
+
+        session.add(new_milestone)
+        session.commit()
+
+        return jsonify({"message": "User mentorship created successfully"}), 201
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
         session.close()
-        return jsonify({"message": "User not found"}), 404
-    
-    data = request.get_json()
-    
-    # Extract user_id, mentor_id, and milestone from the request data
-    user_id = data.get('user_id')
-    mentor_id = data.get('mentor_id')
-    milestone = data.get('milestone')
 
-    user_mentorship = UserMentorship(
-        user_id=user_id,
-        mentor_id=mentor_id,
-        milestone=milestone 
-    )
 
-   
-    session.add(user_mentorship)
-    session.commit()
-    session.close()
+# get milestone api
+@app.route('/milestone', methods=['GET'])
+@jwt_required()
+def get_milestone():
+    session = Session()
+    try:
+        mentor_id = request.args.get('mentor_id')
+        user_id = request.args.get('user_id')
 
-    return jsonify({"message": "User mentorship created successfully"}), 201
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id and user_id are required"}), 400
+
+        # Query the milestone based on user_id and mentor_id
+        milestone_entry = session.query(UserMentorship).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No milestone found for the given mentor_id and user_id"}), 404
+
+        # Convert the milestone entry to a dictionary
+        milestone_data = {
+            "serial_number": milestone_entry.serial_number,
+            "user_id": milestone_entry.user_id,
+            "mentor_id": milestone_entry.mentor_id,
+            "milestone": milestone_entry.milestone,
+            "check_id": milestone_entry.check_id,
+            "check_meeting_id": milestone_entry.check_meeting_id,
+            "created_at": milestone_entry.created_at
+        }
+
+        return jsonify(milestone_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+# update api milestone
+@app.route('/milestone', methods=['PUT'])
+@jwt_required()
+def update_milestone():
+    session = Session()
+    try:
+        data = request.get_json()
+        serial_number = data.get('serial_number')
+        mentor_id = data.get('mentor_id')
+        user_id = data.get('user_id')
+        milestone = data.get('milestone')
+
+        if not serial_number or not mentor_id or not user_id or milestone is None:
+            return jsonify({"error": "serial_number, mentor_id, user_id, and milestone are required"}), 400
+
+        # Fetch the existing milestone entry
+        milestone_entry = session.query(UserMentorship).filter_by(
+            serial_number=serial_number,
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No milestone found for the given serial_number, mentor_id, and user_id"}), 404
+
+        # Replace milestone with new data
+        milestone_entry.milestone = milestone  # Replacing the JSONB field
+
+        # Update other fields if provided
+        if 'check_id' in data:
+            milestone_entry.check_id = data['check_id']
+        if 'check_meeting_id' in data:
+            milestone_entry.check_meeting_id = data['check_meeting_id']
+
+        session.commit()
+
+        return jsonify({"message": "Milestone updated successfully"}), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+# milestone check in meeting
+@app.route('/checkmeeting/milestone', methods=['GET'])
+@jwt_required()
+def get_meetingmilestone():
+    session = Session()
+    try:
+        mentor_id = request.args.get('mentor_id')
+        user_id = request.args.get('user_id')
+        
+        
+
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id or user_id is required"}), 400
+
+        # Query the milestone based on user_id and mentor_id
+        milestone_entry = session.query(UserMentorship).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No check_meeting_id found for the given mentor_id and user_id"}), 404
+
+        # Convert the milestone entry to a dictionary
+        milestone_data = {
+            "serial_number": milestone_entry.serial_number,
+            "user_id": milestone_entry.user_id,
+            "mentor_id": milestone_entry.mentor_id,
+            "milestone": milestone_entry.milestone,
+            "check_id": milestone_entry.check_id,
+            "check_meeting_id": milestone_entry.check_meeting_id,
+            "created_at": milestone_entry.created_at
+        }
+
+        return jsonify(milestone_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
 
 
 # new mentor api get,post
