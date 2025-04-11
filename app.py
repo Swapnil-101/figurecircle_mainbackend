@@ -14,7 +14,7 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
-from sqlalchemy import LargeBinary
+from sqlalchemy import LargeBinary,JSON
 import base64
 from datetime import datetime
 from flask_socketio import emit
@@ -25,6 +25,7 @@ import stripe
 import razorpay
 from razorpay import Client
 from datetime import datetime, timedelta
+from fuzzywuzzy import process
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -59,6 +60,13 @@ class Stream(Base):
 
     name = Column(String, primary_key=True, nullable=False)
 
+class Degree(Base):
+    __tablename__ = 'degrees'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    courses = Column(Text, nullable=True) 
+    competitions = Column(Text, nullable=True) 
+    certifications = Column(Text, nullable=True)
 
 
 #new assign mentor
@@ -93,6 +101,7 @@ class Newmentor(Base):
     milestones = Column(Integer, nullable=False)
     profile_picture = Column(String(500))
     resume = Column(String(500))
+    availability = Column(JSON)  # New column to store availability as JSON
     created_at = Column(DateTime, default=datetime.utcnow)
     assignments = relationship('UserMentorAssignment', back_populates='mentor')
     
@@ -100,12 +109,31 @@ class Information(Base):
     __tablename__ = 'information'
 
     id = Column(Integer, primary_key=True, autoincrement=True)  # Add this line
-    bachelors_degree = Column(String(255), nullable=True)
-    masters_degree = Column(String(255), nullable=True)
-    certifications = Column(Text, nullable=True)
     primary_expertise_area = Column(String(255), nullable=True)
     highest_degree_achieved = Column(String(255), nullable=True)
 
+class education(Base):
+    __tablename__ = 'education_data'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role = Column(String(255), nullable=False)
+    stream = Column(String(255), nullable=False)
+    bachelors_degree = Column(String(255), nullable=True)
+    masters_degree = Column(String(255), nullable=True)
+    certifications = Column(Text, nullable=True)
+    competitions = Column(Text, nullable=True)
+    courses = Column(Text, nullable=True)
+
+    
+# class education(Base):
+#     __tablename__ = 'education_data'
+
+#     id = Column(Integer, primary_key=True, autoincrement=True)
+#     role = Column(String(255), nullable=False)
+#     stream = Column(String(255), nullable=False)
+#     bachelors_degree = Column(String(255), nullable=True)
+#     masters_degree = Column(String(255), nullable=True)
+#     certifications = Column(Text, nullable=True)
     
 class Mentor(Base):
     __tablename__ = 'mentors'
@@ -643,6 +671,97 @@ def update_user_details_diff():
         session.rollback()
         session.close()
         return jsonify({"message": f"Failed to update user details: {str(e)}"}), 500
+
+# new api for get the futureprofile
+@app.route('/get_roles_by_stream', methods=['POST'])
+@jwt_required()
+def get_roles_by_stream():
+    data = request.json
+    role = data.get('role')
+
+    if not role:
+        return jsonify({"error": "Role is required"}), 400
+
+    session = Session()
+    try:
+        # Step 1: Find the stream for the provided role
+        stream_result = session.query(education.stream).filter_by(role=role).first()
+        
+        if not stream_result:
+            return jsonify({"error": "Role not found"}), 404
+
+        stream = stream_result[0]
+
+        # Step 2: Find all roles with the same stream
+        roles_result = session.query(education.role).filter_by(stream=stream).distinct().all()
+        roles = list(set(role for (role,) in roles_result))
+
+        return jsonify({
+            "stream": stream,
+            "related_roles": roles
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching roles by stream: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+    finally:
+        session.close()
+
+
+def get_all_degrees():
+    session = Session()
+    
+    degrees = session.query(Degree).all()
+    return {degree.name.lower(): degree for degree in degrees}
+
+degree_data = get_all_degrees()
+
+
+@app.route('/search-degree', methods=['GET'])
+def search_degree():
+    query = request.args.get('degree', '').strip().lower()
+
+    if not query:
+        return jsonify({"error": "Please provide a degree name"}), 400
+
+    session = Session()
+
+    # Fetch all education entries
+    education_entries = session.query(education).all()
+
+    # Create a map of role -> entry
+    role_map = {entry.role.strip().lower(): entry for entry in education_entries}
+
+    # Try exact match first
+    if query in role_map:
+        edu = role_map[query]
+        return jsonify({
+            "matched_role": edu.role,
+            "degree": edu.bachelors_degree or edu.masters_degree,
+            "courses": edu.courses.split(", ") if edu.courses else [],
+            "competitions": edu.competitions.split(", ") if edu.competitions else [],
+            "certifications": edu.certifications.split(", ") if edu.certifications else [],
+            "match_type": "exact"
+        })
+
+    # If no exact match, do fuzzy matching
+    best_match, score = process.extractOne(query, role_map.keys())
+
+    if best_match:
+        edu = role_map[best_match]
+        return jsonify({
+            "matched_role": edu.role,
+            "degree": edu.bachelors_degree or edu.masters_degree,
+            "courses": edu.courses.split(", ") if edu.courses else [],
+            "competitions": edu.competitions.split(", ") if edu.competitions else [],
+            "certifications": edu.certifications.split(", ") if edu.certifications else [],
+            "match_type": "fuzzy",
+            "confidence": score
+        })
+
+    # Fallback - shouldn't be needed due to "always return" logic
+    return jsonify({"error": "No relevant role found"}), 404
 
 @app.route('/streams', methods=['POST'])
 @jwt_required()
@@ -1496,7 +1615,7 @@ def get_unverified_mentors():
 
 
 #inforamtion apis
-@app.route('/get_information', methods=['POST'])
+@app.route('/get_information', methods=['POST']) 
 @jwt_required()
 def get_information():
     """
@@ -1507,37 +1626,44 @@ def get_information():
     """
     data = request.json
 
-    # Define all possible fields
-    possible_fields = {
-        "bachelors_degree": Information.bachelors_degree,
-        "masters_degree": Information.masters_degree,
-        "certifications": Information.certifications,
+    if not data or not isinstance(data, dict):
+        return jsonify({"message": "Invalid request format. Expected a JSON object with boolean values."}), 400
+
+    # Define fields separately
+    info_fields = {
         "primary_expertise_area": Information.primary_expertise_area,
         "highest_degree_achieved": Information.highest_degree_achieved
     }
 
-    # Validate and filter requested fields
-    if not data or not isinstance(data, dict):
-        return jsonify({"message": "Invalid request format. Expected a JSON object with boolean values."}), 400
+    edu_fields = {
+        "bachelors_degree": education.bachelors_degree,
+        "masters_degree": education.masters_degree,
+        "certifications": education.certifications
+    }
 
-    selected_field_names = [field for field, include in data.items() if include and field in possible_fields]
-
-    if not selected_field_names:
-        return jsonify({"message": "No valid fields selected"}), 400
-
-    selected_columns = [possible_fields[field] for field in selected_field_names]
+    selected_info_fields = [field for field, include in data.items() if include and field in info_fields]
+    selected_edu_fields = [field for field, include in data.items() if include and field in edu_fields]
 
     session = Session()
     try:
-        # Fetch only the selected columns
-        query = session.query(*selected_columns)
-        rows = query.all()
+        response_data = {}
 
-        # Transform the data into the required format
-        response_data = {field: [] for field in selected_field_names}
-        for row in rows:
-            for field in selected_field_names:
-                response_data[field].append(getattr(row, field))
+        # Fetch from Information table
+        if selected_info_fields:
+            info_columns = [info_fields[field] for field in selected_info_fields]
+            info_rows = session.query(*info_columns).all()
+            for i, field in enumerate(selected_info_fields):
+                response_data[field] = [getattr(row, field) for row in info_rows]
+
+        # Fetch from education_data table
+        if selected_edu_fields:
+            edu_columns = [edu_fields[field] for field in selected_edu_fields]
+            edu_rows = session.query(*edu_columns).all()
+            for i, field in enumerate(selected_edu_fields):
+                response_data[field] = [getattr(row, field) for row in edu_rows]
+
+        if not response_data:
+            return jsonify({"message": "No valid fields selected"}), 400
 
         return jsonify(response_data), 200
 
@@ -1547,6 +1673,7 @@ def get_information():
 
     finally:
         session.close()
+
 
 # post api
 @app.route('/update_information', methods=['POST'])
@@ -2102,17 +2229,16 @@ def get_meetingmilestone():
 def add_new_mentor():
     current_user = get_jwt_identity()
     session = Session()
-    
+   
     # Fetch the user based on the JWT identity
     user = session.query(User).filter_by(username=current_user).first()
-    
+   
     if not user:
         return jsonify({"message": "User not found"}), 404
-    
+   
     try:
         data = request.get_json()  
-
-        
+       
         user_id = user.id
         name = data.get('name')
         email = data.get('email')
@@ -2125,12 +2251,19 @@ def add_new_mentor():
         milestones = data.get('milestones')
         profile_picture = data.get('profile_picture', None)
         resume = data.get('resume', None)
-
+        availability = data.get('availability', [])  # New field for availability
+       
+        # Validate availability data
+        if availability:
+            for slot in availability:
+                if not all(key in slot for key in ['day', 'startTime', 'endTime']):
+                    return jsonify({'error': 'Invalid availability format'}), 400
         
         if not all([user_id, name, email, linkedin, expertise, degree, background, milestones]):
             return jsonify({'error': 'Missing required fields'}), 400
-
         
+        print("availability==>",availability)
+       
         new_mentor = Newmentor(
             user_id=user_id,
             name=name,
@@ -2143,19 +2276,20 @@ def add_new_mentor():
             fee=fee,
             milestones=milestones,
             profile_picture=profile_picture,
-            resume=resume
+            resume=resume,
+            availability=availability  # Add availability to the new mentor
         )
-
        
         session.add(new_mentor)
         session.commit()
-
-        return jsonify({'message': 'New mentor added successfully', 'mentor_id': new_mentor.mentor_id}), 201
-
+        return jsonify({
+            'message': 'New mentor added successfully', 
+            'mentor_id': new_mentor.mentor_id,
+            'availability': availability
+        }), 201
     except IntegrityError:
         session.rollback()
         return jsonify({'error': 'Email already exists'}), 400
-
     except Exception as e:
         session.rollback()
         return jsonify({'error': str(e)}), 500

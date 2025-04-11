@@ -13,6 +13,15 @@ class Information(Base):
     certifications = Column(String(255))  # Storing only one certification per record
     primary_expertise_area = Column(String(255))
     highest_degree_achieved = Column(String(255))
+    
+class Degree(Base):
+    __tablename__ = 'degrees'
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True)
+    courses = Column(Text, nullable=True) 
+    competitions = Column(Text, nullable=True) 
+    certifications = Column(Text, nullable=True)
+    
 
 # Database configuration
 DATABASE_URL = "postgresql://neondb_owner:Pl8cWUu0iLHn@ep-tiny-haze-a1w7wrrg.ap-southeast-1.aws.neon.tech/figure_circle"
