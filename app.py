@@ -673,24 +673,38 @@ def update_user_details_diff():
         return jsonify({"message": f"Failed to update user details: {str(e)}"}), 500
 
 # new api for get the futureprofile
-@app.route('/get_roles_by_stream', methods=['POST'])
+@app.route('/get_roles_by_stream', methods=['POST']) 
 @jwt_required()
 def get_roles_by_stream():
     data = request.json
     role = data.get('role')
-
-    if not role:
-        return jsonify({"error": "Role is required"}), 400
+    highest_degree = data.get('highestdegree')  # Accept 'bachelors_degree' or 'masters_degree'
 
     session = Session()
     try:
-        # Step 1: Find the stream for the provided role
-        stream_result = session.query(education.stream).filter_by(role=role).first()
-        
-        if not stream_result:
-            return jsonify({"error": "Role not found"}), 404
+        if role:
+            # Step 1: Find the stream for the provided role
+            stream_result = session.query(education.stream).filter_by(role=role).first()
 
-        stream = stream_result[0]
+            if not stream_result:
+                return jsonify({"error": "Role not found"}), 404
+
+            stream = stream_result[0]
+
+        elif highest_degree:
+            # Step 1 (alternate): Find the stream for the provided highest degree
+            stream_result = session.query(education.stream).filter(
+                (education.bachelors_degree == highest_degree) |
+                (education.masters_degree == highest_degree)
+            ).first()
+
+            if not stream_result:
+                return jsonify({"error": "Degree not found"}), 404
+
+            stream = stream_result[0]
+
+        else:
+            return jsonify({"error": "Either role or highestdegree is required"}), 400
 
         # Step 2: Find all roles with the same stream
         roles_result = session.query(education.role).filter_by(stream=stream).distinct().all()
@@ -707,6 +721,7 @@ def get_roles_by_stream():
 
     finally:
         session.close()
+
 
 
 def get_all_degrees():
