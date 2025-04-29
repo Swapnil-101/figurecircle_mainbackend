@@ -26,6 +26,7 @@ import razorpay
 from razorpay import Client
 from datetime import datetime, timedelta
 from fuzzywuzzy import process
+from flasgger import Swagger
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -271,10 +272,13 @@ class Schedule(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     email = Column(String, nullable=False)
-    start_datetime = Column(DateTime, nullable=False)  # Combined field
-    end_datetime = Column(DateTime, nullable=False)    # Combined field
-    link = Column(String, nullable=True)              # Optional field
+    start_datetime = Column(DateTime, nullable=False)
+    end_datetime = Column(DateTime, nullable=False)
+    link = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # New field
+    timezone = Column(String, nullable=False)  # e.g., 'UTC', 'Asia/Kolkata'
 
     # Mentor details
     mentor_id = Column(Integer, nullable=False)
@@ -282,10 +286,12 @@ class Schedule(Base):
     mentor_email = Column(String, nullable=False)
     user_id = Column(Integer, nullable=False)
     duration = Column(Integer, nullable=False)
+
     
 Session = sessionmaker(bind=engine)
 
 app = Flask(__name__)
+swagger = Swagger(app)
 CORS(app, support_credentials=False,origins="*")
 app.config['JWT_SECRET_KEY'] = "123456"
 
@@ -1010,14 +1016,15 @@ def create_schedule():
         start_datetime = datetime.fromisoformat(data.get('start_datetime'))
         end_datetime = datetime.fromisoformat(data.get('end_datetime'))
         link = data.get('link')
+        timezone = data.get('timezone')  # New
         user_id = data.get('user_id')
         mentor_id = data.get('mentor_id')
         mentor_name = data.get('mentor_name')
         mentor_email = data.get('mentor_email')
-        duration =data.get('duration')
+        duration = data.get('duration')
 
         # Validate required fields
-        if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime,duration]):
+        if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime, duration, timezone]):
             return jsonify({"error": "Missing required fields"}), 400
 
         # Create a new schedule entry
@@ -1027,6 +1034,7 @@ def create_schedule():
             start_datetime=start_datetime,
             end_datetime=end_datetime,
             link=link,
+            timezone=timezone,  # Add here
             user_id=user_id,
             mentor_id=mentor_id,
             mentor_name=mentor_name,
@@ -1042,6 +1050,7 @@ def create_schedule():
         return jsonify({"error": str(e)}), 400
     finally:
         session.close()
+
 
 
   
@@ -1095,6 +1104,8 @@ def get_schedule(schedule_id):
     # Search for the schedule where the link contains "/v2/meetingcall/<schedule_id>"
     schedule = session.query(Schedule).filter(Schedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
     session.close()
+    
+    print("checking--->",schedule)
 
     if not schedule:
         return jsonify({"error": "Schedule not found"}), 404
@@ -1125,7 +1136,8 @@ def get_schedule(schedule_id):
         "mentor_email": schedule.mentor_email,
         "user_id": schedule.user_id,
         "duration": schedule.duration,
-        "start_param": schedule.link  # Assuming 'link' column stores the 'start' value
+        "start_param": schedule.link,
+        "timezone": schedule.timezone 
     })
 
 
@@ -1181,7 +1193,8 @@ def get_schedule_by_link():
         "mentor_name": schedule.mentor_name,
         "mentor_email": schedule.mentor_email,
         "user_id": schedule.user_id,
-        "duration": schedule.duration
+        "duration": schedule.duration,
+        "timezone": schedule.timezone
     })
     
 # GET all feedback
