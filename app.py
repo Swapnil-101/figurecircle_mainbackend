@@ -114,6 +114,17 @@ class Review(Base):
     ReviewIndetail = Column(String)
     userDetails = Column(JSON)
     valid = Column(Boolean)
+
+#contact us table
+class ContactUs(Base):
+    __tablename__ = 'ContactUs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fullname = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False)
+    phone_number = Column(String(20), nullable=True)
+    description = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
 class Information(Base):
     __tablename__ = 'information'
@@ -2661,6 +2672,38 @@ def upload_reviews():
             session.add(review)  # use add instead of merge since ID is auto
         session.commit()
         return jsonify({"message": "Reviews inserted successfully"}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+        
+#contact us api
+@app.route('/api/contact-us', methods=['POST'])
+def submit_contact():
+    session = Session()
+    try:
+        data = request.get_json()
+
+        fullname = data.get('fullname')
+        email = data.get('email')
+        phone_number = data.get('phone_number')
+        description = data.get('description')
+
+        if not all([fullname, email, description]):
+            return jsonify({"error": "fullname, email, and description are required"}), 400
+
+        contact = ContactUs(
+            fullname=fullname,
+            email=email,
+            phone_number=phone_number,
+            description=description
+        )
+
+        session.add(contact)
+        session.commit()
+
+        return jsonify({"message": "Contact form submitted successfully"}), 201
     except Exception as e:
         session.rollback()
         return jsonify({"error": str(e)}), 500
