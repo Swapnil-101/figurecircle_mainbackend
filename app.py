@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean,UniqueConstraint
+from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean,UniqueConstraint,Date
 from sqlalchemy import create_engine, and_, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -105,6 +105,15 @@ class Newmentor(Base):
     availability = Column(JSON)  # New column to store availability as JSON
     created_at = Column(DateTime, default=datetime.utcnow)
     assignments = relationship('UserMentorAssignment', back_populates='mentor')
+
+class Review(Base):
+    __tablename__ = 'Review'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date)
+    ReviewIndetail = Column(String)
+    userDetails = Column(JSON)
+    valid = Column(Boolean)
     
 class Information(Base):
     __tablename__ = 'information'
@@ -604,6 +613,34 @@ def get_mentor_details():
     finally:
         session.close()
 
+@app.route('/api/mentors', methods=['GET'])
+def get_all_mentors():
+    session = Session()
+    try:
+        mentors = session.query(Newmentor).all()
+        mentor_list = []
+        for mentor in mentors:
+            mentor_list.append({
+                "mentor_id": mentor.mentor_id,
+                "user_id": mentor.user_id,
+                "name": mentor.name,
+                "email": mentor.email,
+                "phone": mentor.phone,
+                "linkedin": mentor.linkedin,
+                "expertise": mentor.expertise,
+                "degree": mentor.degree,
+                "background": mentor.background,
+                "fee": mentor.fee,
+                "milestones": mentor.milestones,
+                "profile_picture": mentor.profile_picture,
+                "resume": mentor.resume,
+                "created_at": mentor.created_at.isoformat() if mentor.created_at else None
+            })
+        return jsonify(mentor_list), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
 
 # check mentor 
 @app.route('/api/check_user', methods=['GET'])
@@ -2585,8 +2622,50 @@ def get_recommended_mentors():
 
 
 
+#review api
+@app.route('/api/reviews', methods=['GET'])
+def get_all_reviews():
+    session = Session()
+    try:
+        reviews = session.query(Review).all()
+        review_list = []
+        for review in reviews:
+            review_list.append({
+                "id": review.id,
+                "date": review.date.isoformat() if review.date else None,
+                "ReviewIndetail": review.ReviewIndetail,
+                "userDetails": review.userDetails,  # Will be returned as JSON
+                "valid": review.valid
+            })
+        return jsonify(review_list), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
 
+@app.route('/api/reviews', methods=['POST'])
+def upload_reviews():
+    session = Session()
+    try:
+        data = request.get_json()
+        if not isinstance(data, list):
+            return jsonify({"error": "Expected a list of reviews"}), 400
 
+        for item in data:
+            review = Review(
+                date=datetime.strptime(item['date'], "%Y-%m-%d").date(),
+                ReviewIndetail=item.get('ReviewIndetail'),
+                userDetails=item.get('userDetails'),
+                valid=item.get('valid')
+            )
+            session.add(review)  # use add instead of merge since ID is auto
+        session.commit()
+        return jsonify({"message": "Reviews inserted successfully"}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
 
 @app.route('/assigned_users', methods=['GET'])
 @jwt_required()
