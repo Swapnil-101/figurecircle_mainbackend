@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify, redirect, url_for
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean,UniqueConstraint,Date
+from sqlalchemy import Column, Integer, String, ForeignKey, Text, DateTime, Boolean,UniqueConstraint,Date, func, or_
 from sqlalchemy import create_engine, and_, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
@@ -84,6 +84,19 @@ class UserMentorAssignment(Base):
     # Relationships (optional)
     user = relationship('User', back_populates='assignments')
     mentor = relationship('Newmentor', back_populates='assignments') 
+    
+#new basic info table
+class BasicInfo(Base):
+    __tablename__ = 'basic_info'
+
+    id = Column(Integer, primary_key=True)
+    emailid = Column(String(255), nullable=False)
+    useruniqid = Column(String(100), nullable=False)
+    firstname = Column(String(100))
+    lastname = Column(String(100))
+    high_education = Column(String(150))
+    interested_stream = Column(String(150))
+    data_filed = Column(Boolean, default=False)
 
 # new mentor table
 class Newmentor(Base):
@@ -2560,6 +2573,69 @@ def get_recommended_mentors():
         session.close()
 
 
+#new recommend
+@app.route('/api/recommend-mentors', methods=['GET'])
+@jwt_required()
+def recommend_mentors():
+    current_user_email = get_jwt_identity()
+
+    session = Session()
+
+    try:
+        user = session.query(User).filter_by(username=current_user_email).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        basic_info = session.query(BasicInfo).filter_by(emailid=current_user_email).first()
+        if not basic_info:
+            return jsonify({'error': 'User basic_info not found'}), 404
+
+        high_education = (basic_info.high_education or '').lower()
+        interested_stream = (basic_info.interested_stream or '').lower()
+
+        # Combine user fields for fuzzy search, you can tweak this
+        search_terms = [high_education, interested_stream]
+
+        # Minimum similarity threshold (0 to 1), tweak for sensitivity
+        similarity_threshold = 0.3
+
+        filters = []
+        for term in search_terms:
+            if term:
+                filters.append(func.similarity(Newmentor.degree, term) > similarity_threshold)
+                filters.append(func.similarity(Newmentor.expertise, term) > similarity_threshold)
+                filters.append(func.similarity(Newmentor.background, term) > similarity_threshold)
+
+        # Query with OR of fuzzy similarity filters
+        recommended_mentors = session.query(Newmentor).filter(or_(*filters)).all()
+
+        mentor_data = [
+            {
+                'mentor_id': m.mentor_id,
+                'name': m.name,
+                'email': m.email,
+                'phone': m.phone,
+                'linkedin': m.linkedin,
+                'expertise': m.expertise,
+                'degree': m.degree,
+                'background': m.background,
+                'fee': m.fee,
+                'milestones': m.milestones,
+                'profile_picture': m.profile_picture,
+                'resume': m.resume,
+                'availability': m.availability,
+                'created_at': m.created_at
+            } for m in recommended_mentors
+        ]
+
+        return jsonify({'recommended_mentors': mentor_data}), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
 # @app.route('/recommended_mentors', methods=['GET'])
 # @jwt_required()
 # def get_recommended_mentors():
@@ -2710,6 +2786,55 @@ def submit_contact():
     finally:
         session.close()
 
+
+#basic info api
+@app.route('/api/basic-info', methods=['POST'])
+@jwt_required()
+def create_basic_info():
+    data = request.get_json()
+    
+    # Get the current logged-in user's ID from JWT
+    current_user_id = get_jwt_identity()
+
+    # Validate required field: emailid (useruniqid now comes from JWT)
+    if 'emailid' not in data:
+        return jsonify({'error': 'Missing required field: emailid'}), 400
+
+    session = Session()
+
+    try:
+        # Check if basic_info already exists for this emailid or user ID
+        existing_user = session.query(BasicInfo).filter(
+            (BasicInfo.emailid == data['emailid']) |
+            (BasicInfo.useruniqid == str(current_user_id))  # useruniqid as string
+        ).first()
+
+        if existing_user:
+            return jsonify({'error': 'This user already has a basic_info record'}), 400
+
+        # Create new basic_info record
+        new_info = BasicInfo(
+            emailid=data['emailid'],
+            useruniqid=str(current_user_id),
+            firstname=data.get('firstname'),
+            lastname=data.get('lastname'),
+            high_education=data.get('high_education'),
+            interested_stream=data.get('interested_stream'),
+            data_filed=data.get('data_filed', False)  # Default to False
+        )
+
+        session.add(new_info)
+        session.commit()
+
+        return jsonify({'message': 'Basic info added successfully', 'id': new_info.id}), 201
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+        
 @app.route('/assigned_users', methods=['GET'])
 @jwt_required()
 def get_assigned_users():
