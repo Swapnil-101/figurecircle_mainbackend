@@ -2833,6 +2833,42 @@ def create_basic_info():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+        
+        
+@app.route('/api/basic-info', methods=['GET'])
+@jwt_required()
+def get_basic_info():
+    # Get the current logged-in user's ID from JWT
+    current_user_id = get_jwt_identity()
+
+    session = Session()
+
+    try:
+        # Fetch the basic_info record associated with the current user
+        user_info = session.query(BasicInfo).filter_by(useruniqid=str(current_user_id)).first()
+
+        if not user_info:
+            return jsonify({'error': 'No basic_info record found for this user'}), 404
+
+        # Serialize and return the basic_info record
+        result = {
+            'id': user_info.id,
+            'emailid': user_info.emailid,
+            'useruniqid': user_info.useruniqid,
+            'firstname': user_info.firstname,
+            'lastname': user_info.lastname,
+            'high_education': user_info.high_education,
+            'interested_stream': user_info.interested_stream,
+            'data_filed': user_info.data_filed
+        }
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        session.close()
 
         
 @app.route('/assigned_users', methods=['GET'])
