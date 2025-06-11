@@ -2312,6 +2312,339 @@ def get_meetingmilestone():
         session.close()
 
 
+#progress apis
+# Get Latest Milestone API
+@app.route('/milestone/latest', methods=['GET'])
+@jwt_required()
+def get_latest_milestone():
+    session = Session()
+    try:
+        mentor_id = request.args.get('mentor_id')
+        user_id = request.args.get('user_id')
+
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id and user_id are required"}), 400
+
+        # Query the latest milestone based on user_id and mentor_id (ordered by created_at desc)
+        milestone_entry = session.query(UserMentorship).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).order_by(UserMentorship.created_at.desc()).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No milestone found for the given mentor_id and user_id"}), 404
+
+        # Convert the milestone entry to a dictionary
+        milestone_data = {
+            "serial_number": milestone_entry.serial_number,
+            "user_id": milestone_entry.user_id,
+            "mentor_id": milestone_entry.mentor_id,
+            "milestone": milestone_entry.milestone,
+            "check_id": milestone_entry.check_id,
+            "check_meeting_id": milestone_entry.check_meeting_id,
+            "created_at": milestone_entry.created_at
+        }
+
+        return jsonify(milestone_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+# Get Latest Feedback API
+@app.route('/feedback/latest', methods=['GET'])
+@jwt_required()
+def get_latest_feedback():
+    session = Session()
+    try:
+        mentor_id = request.args.get('mentor_id')
+        user_id = request.args.get('user_id')
+
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id and user_id are required"}), 400
+
+        # Query the latest feedback based on user_id and mentor_id (ordered by created_at desc)
+        feedback_entry = session.query(Feedback).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).order_by(Feedback.created_at.desc()).first()
+
+        if not feedback_entry:
+            return jsonify({"error": "No feedback found for the given mentor_id and user_id"}), 404
+
+        # Convert the feedback entry to a dictionary
+        feedback_data = {
+            "feedback_id": feedback_entry.feedback_id,
+            "user_id": feedback_entry.user_id,
+            "mentor_id": feedback_entry.mentor_id,
+            "milestone": feedback_entry.milestone,
+            "milestone_achieved": feedback_entry.milestone_achieved,
+            "next_steps_identified": feedback_entry.next_steps_identified,
+            "progress_rating": feedback_entry.progress_rating,
+            "mentor_responsibility": feedback_entry.mentor_responsibility,
+            "user_responsibility": feedback_entry.user_responsibility,
+            "check_id": feedback_entry.check_id,
+            "check_meeting_id": feedback_entry.check_meeting_id,
+            "created_at": feedback_entry.created_at
+        }
+
+        return jsonify(feedback_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+# Get Progress with Experts API - Dynamic Progress Calculation
+@app.route('/progress', methods=['GET'])
+@jwt_required()
+def get_progress():
+    session = Session()
+    try:
+        mentor_id = request.args.get('mentor_id')
+        user_id = request.args.get('user_id')
+
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id and user_id are required"}), 400
+
+        # Get the latest milestone data
+        milestone_entry = session.query(UserMentorship).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).order_by(UserMentorship.created_at.desc()).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No milestone found for the given mentor_id and user_id"}), 404
+
+        # Get all feedback entries for this user-mentor pair
+        feedback_entries = session.query(Feedback).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).order_by(Feedback.created_at.desc()).all()
+
+        # Get the latest feedback
+        latest_feedback = feedback_entries[0] if feedback_entries else None
+
+        # Extract milestone data
+        milestones = milestone_entry.milestone if milestone_entry.milestone else []
+        total_milestones = len(milestones)
+        
+        if total_milestones == 0:
+            return jsonify({"error": "No milestones defined"}), 400
+
+        # Calculate completed milestones based on feedback
+        completed_milestones = 0
+        milestone_details = []
+        pending_tasks = []
+        completed_tasks = []
+
+        for i, milestone in enumerate(milestones):
+            milestone_name = milestone.get('milestone', '').lower()
+            is_completed = False
+            
+            # Check if this milestone is completed based on feedback
+            for feedback in feedback_entries:
+                feedback_milestone = feedback.milestone.lower()
+                # Match milestone names (case-insensitive)
+                if (milestone_name in feedback_milestone or 
+                    feedback_milestone in milestone_name or
+                    f"milestone {i+1}" in feedback_milestone):
+                    if feedback.milestone_achieved:
+                        is_completed = True
+                        completed_milestones += 1
+                        break
+            
+            milestone_detail = {
+                "milestone": milestone.get('milestone'),
+                "description": milestone.get('description'),
+                "expected_completion_date": milestone.get('expectedCompletionDate'),
+                "mentor_fees": milestone.get('mentorFees'),
+                "completed": is_completed,
+                "completion_date": None  # You can add this if you track completion dates
+            }
+            milestone_details.append(milestone_detail)
+            
+            if is_completed:
+                completed_tasks.append({
+                    "task": milestone.get('milestone'),
+                    "completion_date": milestone.get('expectedCompletionDate')  # or actual completion date
+                })
+            else:
+                pending_tasks.append({
+                    "task": milestone.get('milestone'),
+                    "due_date": milestone.get('expectedCompletionDate')
+                })
+
+        # Calculate progress percentage
+        progress_percentage = round((completed_milestones / total_milestones) * 100)
+
+        # Prepare response data
+        progress_data = {
+            "milestones_completed": f"{completed_milestones}/{total_milestones}",
+            "progress_percentage": progress_percentage,
+            "latest_feedback": latest_feedback.milestone if latest_feedback else "No feedback available",
+            "milestone_details": milestone_details,
+            "pending_tasks": pending_tasks,
+            "completed_tasks": completed_tasks,
+            "total_milestones": total_milestones,
+            "completed_count": completed_milestones,
+            "user_id": user_id,
+            "mentor_id": mentor_id,
+            "last_updated": milestone_entry.created_at if milestone_entry else None
+        }
+
+        return jsonify(progress_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+# Helper function to normalize milestone names for comparison
+def normalize_milestone_name(milestone_name):
+    """
+    Normalize milestone names for better matching
+    """
+    if not milestone_name:
+        return ""
+    
+    # Convert to lowercase and remove extra spaces
+    normalized = milestone_name.lower().strip()
+    
+    # Handle common variations
+    normalized = normalized.replace("milestone", "").strip()
+    
+    return normalized
+
+
+# Enhanced Progress API with better milestone matching
+@app.route('/progress/enhanced', methods=['GET'])
+@jwt_required()
+def get_enhanced_progress():
+    session = Session()
+    try:
+        mentor_id = request.args.get('mentor_id')
+        user_id = request.args.get('user_id')
+
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id and user_id are required"}), 400
+
+        # Get the latest milestone data
+        milestone_entry = session.query(UserMentorship).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).order_by(UserMentorship.created_at.desc()).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No milestone found"}), 404
+
+        # Get all feedback entries
+        feedback_entries = session.query(Feedback).filter_by(
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).order_by(Feedback.created_at.desc()).all()
+
+        milestones = milestone_entry.milestone if milestone_entry.milestone else []
+        total_milestones = len(milestones)
+        
+        if total_milestones == 0:
+            return jsonify({"error": "No milestones defined"}), 400
+
+        # Enhanced milestone matching and progress calculation
+        completed_milestones = []
+        pending_milestones = []
+        
+        for i, milestone in enumerate(milestones):
+            milestone_name = milestone.get('milestone', '')
+            is_completed = False
+            completion_feedback = None
+            
+            # Check multiple matching strategies
+            for feedback in feedback_entries:
+                if feedback.milestone_achieved:
+                    feedback_milestone = feedback.milestone.lower()
+                    milestone_lower = milestone_name.lower()
+                    
+                    # Strategy 1: Exact match
+                    if feedback_milestone == milestone_lower:
+                        is_completed = True
+                        completion_feedback = feedback
+                        break
+                    
+                    # Strategy 2: Contains match
+                    elif (milestone_lower in feedback_milestone or 
+                          feedback_milestone in milestone_lower):
+                        is_completed = True
+                        completion_feedback = feedback
+                        break
+                    
+                    # Strategy 3: Milestone number match
+                    elif f"milestone {i+1}" in feedback_milestone:
+                        is_completed = True
+                        completion_feedback = feedback
+                        break
+            
+            milestone_info = {
+                "id": i + 1,
+                "milestone": milestone_name,
+                "description": milestone.get('description', ''),
+                "expected_completion_date": milestone.get('expectedCompletionDate'),
+                "mentor_fees": milestone.get('mentorFees'),
+                "completed": is_completed,
+                "completion_date": completion_feedback.created_at if completion_feedback else None,
+                "progress_rating": completion_feedback.progress_rating if completion_feedback else None
+            }
+            
+            if is_completed:
+                completed_milestones.append(milestone_info)
+            else:
+                pending_milestones.append(milestone_info)
+
+        # Calculate progress percentage
+        completed_count = len(completed_milestones)
+        progress_percentage = round((completed_count / total_milestones) * 100)
+
+        # Get latest feedback info
+        latest_feedback = feedback_entries[0] if feedback_entries else None
+
+        # Prepare comprehensive response
+        response_data = {
+            "progress_summary": {
+                "milestones_completed": f"{completed_count}/{total_milestones}",
+                "progress_percentage": progress_percentage,
+                "total_milestones": total_milestones,
+                "completed_count": completed_count,
+                "pending_count": len(pending_milestones)
+            },
+            "latest_feedback": {
+                "milestone": latest_feedback.milestone if latest_feedback else None,
+                "milestone_achieved": latest_feedback.milestone_achieved if latest_feedback else None,
+                "progress_rating": latest_feedback.progress_rating if latest_feedback else None,
+                "created_at": latest_feedback.created_at if latest_feedback else None
+            } if latest_feedback else None,
+            "milestones": {
+                "completed": completed_milestones,
+                "pending": pending_milestones
+            },
+            "metadata": {
+                "user_id": int(user_id),
+                "mentor_id": int(mentor_id),
+                "last_updated": milestone_entry.created_at,
+                "total_feedback_entries": len(feedback_entries)
+            }
+        }
+
+        return jsonify(response_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
 # new mentor api get,post
 @app.route('/add_new_mentor', methods=['POST'])
 @jwt_required()
