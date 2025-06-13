@@ -2823,6 +2823,7 @@ def get_assigned_mentors_list():
                 "milestones": assignment.mentor.milestones,
                 "profile_picture": assignment.mentor.profile_picture,
                 "resume": assignment.mentor.resume,
+                "availability":assignment.mentor.availability
             }
             for assignment in assignments
         ]
