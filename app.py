@@ -3203,6 +3203,51 @@ def get_basic_info():
 
     finally:
         session.close()
+        
+@app.route('/api/basic-info', methods=['PUT'])
+@jwt_required()
+def update_basic_info():
+    # Get current logged-in user's ID from JWT
+    current_user_id = get_jwt_identity()
+
+    session = Session()
+
+    try:
+        # Fetch the basic_info record for this user
+        user_info = session.query(BasicInfo).filter_by(useruniqid=str(current_user_id)).first()
+
+        if not user_info:
+            return jsonify({'error': 'No basic_info record found for this user'}), 404
+
+        # Get the JSON data from request
+        data = request.get_json()
+
+        # Update fields if present in request data
+        if 'emailid' in data:
+            user_info.emailid = data['emailid']
+        if 'firstname' in data:
+            user_info.firstname = data['firstname']
+        if 'lastname' in data:
+            user_info.lastname = data['lastname']
+        if 'high_education' in data:
+            user_info.high_education = data['high_education']
+        if 'interested_stream' in data:
+            user_info.interested_stream = data['interested_stream']
+        if 'data_filed' in data:
+            user_info.data_filed = data['data_filed']
+
+        # Commit changes
+        session.commit()
+
+        return jsonify({'message': 'Basic info updated successfully'}), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+    finally:
+        session.close()
+
 
         
 @app.route('/assigned_users', methods=['GET'])
