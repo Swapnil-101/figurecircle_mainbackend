@@ -27,6 +27,8 @@ from razorpay import Client
 from datetime import datetime, timedelta
 from fuzzywuzzy import process
 from flasgger import Swagger
+from sqlalchemy.ext.mutable import MutableList
+from sqlalchemy.orm.attributes import flag_modified
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -213,7 +215,7 @@ class UserMentorship(Base):
     serial_number = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, nullable=False)
     mentor_id = Column(Integer, nullable=False)
-    milestone = Column(JSONB, nullable=False)
+    milestone = Column(MutableList.as_mutable(JSONB), nullable=False)
     check_id = Column(Integer, nullable=True)  # New field
     check_meeting_id = Column(Integer, nullable=True)  # New field
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -2321,16 +2323,20 @@ def update_milestone():
         if not milestone_entry:
             return jsonify({"error": "No milestone found for the given serial_number, mentor_id, and user_id"}), 404
 
-        # If milestone field is None, initialize as empty list
+        # Defensive: ensure milestone is a list
         if milestone_entry.milestone is None:
             milestone_entry.milestone = []
+        elif isinstance(milestone_entry.milestone, str):
+            try:
+                milestone_entry.milestone = json.loads(milestone_entry.milestone)
+            except Exception:
+                milestone_entry.milestone = []
 
-        # Append new milestone object
-        if isinstance(milestone_entry.milestone, list):
-            milestone_entry.milestone.append(new_milestone)
-        else:
-            # If milestone is not a list, convert to list
-            milestone_entry.milestone = [milestone_entry.milestone, new_milestone]
+        if not isinstance(milestone_entry.milestone, list):
+            milestone_entry.milestone = [milestone_entry.milestone]
+
+        milestone_entry.milestone.append(new_milestone)
+        flag_modified(milestone_entry, "milestone")
 
         # Update other fields if provided
         if 'check_id' in data:
@@ -2346,6 +2352,7 @@ def update_milestone():
         return jsonify({"error": str(e)}), 500
     finally:
         session.close()
+
 
 
 
