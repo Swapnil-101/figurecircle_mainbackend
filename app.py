@@ -455,6 +455,7 @@ def register():
     }), 201
 
 
+
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -2188,20 +2189,73 @@ def milestone():
     finally:
         session.close()
 
+#milestone new
+@app.route('/mentor/milestone', methods=['POST'])
+@jwt_required()
+def mentor_save_milestone():
+    current_user = get_jwt_identity()
+    session = Session()
+    try:
+        # Get the User object for the current user
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({"message": "User not found"}), 404
 
-# get milestone api
-@app.route('/milestone', methods=['GET'])
+        # Check if the user is a mentor in Newmentortable
+        mentor = session.query(Newmentor).filter_by(user_id=user.id).first()
+        if not mentor:
+            session.close()
+            return jsonify({"message": "Only mentors can save milestones."}), 403
+
+        data = request.get_json()
+        required_fields = ['user_id', 'mentor_id', 'milestone', 'check_meeting_id', 'check_id']
+        missing_fields = [field for field in required_fields if data.get(field) is None]
+        if missing_fields:
+            return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+
+        user_id = data['user_id']
+        mentor_id = data['mentor_id']
+        milestone = data['milestone']
+        check_meeting_id = data['check_meeting_id']
+        check_id = data['check_id']
+
+        # Check if the milestone entry already exists for the given check_id and check_meeting_id
+        existing_entry = session.query(UserMentorship).filter_by(
+            check_id=check_id,
+            check_meeting_id=check_meeting_id
+        ).first()
+        if existing_entry:
+            return jsonify({"error": "Milestone already submitted for this check_id and check_meeting_id"}), 400
+
+        # Create new milestone entry
+        new_milestone = UserMentorship(
+            user_id=user_id,
+            mentor_id=mentor_id,
+            milestone=milestone,
+            check_meeting_id=check_meeting_id,
+            check_id=check_id
+        )
+        session.add(new_milestone)
+        session.commit()
+        return jsonify({"message": "User mentorship created successfully"}), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/milestone', methods=['GET'])
 @jwt_required()
 def get_milestone():
     session = Session()
     try:
         mentor_id = request.args.get('mentor_id')
         user_id = request.args.get('user_id')
+        history = request.args.get('history', default='0')
 
         if not mentor_id or not user_id:
             return jsonify({"error": "mentor_id and user_id are required"}), 400
 
-        # Query the milestone based on user_id and mentor_id
         milestone_entry = session.query(UserMentorship).filter_by(
             mentor_id=mentor_id,
             user_id=user_id
@@ -2210,16 +2264,30 @@ def get_milestone():
         if not milestone_entry:
             return jsonify({"error": "No milestone found for the given mentor_id and user_id"}), 404
 
-        # Convert the milestone entry to a dictionary
+        # Get milestone list
+        milestone_list = milestone_entry.milestone or []
+
+        # Default: latest milestone object
+        latest_milestone = milestone_list[-1] if isinstance(milestone_list, list) and milestone_list else {}
+
+        history_count = len(milestone_list)
+
+        # Prepare response
         milestone_data = {
             "serial_number": milestone_entry.serial_number,
             "user_id": milestone_entry.user_id,
             "mentor_id": milestone_entry.mentor_id,
-            "milestone": milestone_entry.milestone,
+            "latest_milestone": latest_milestone,
             "check_id": milestone_entry.check_id,
             "check_meeting_id": milestone_entry.check_meeting_id,
-            "created_at": milestone_entry.created_at
+            "created_at": milestone_entry.created_at,
+            "history_count":history_count
         }
+
+        # If history=1, include full milestone list and count
+        if history == '1':
+            milestone_data["milestone_history"] = milestone_list
+            milestone_data["history_count"] = len(milestone_list)
 
         return jsonify(milestone_data), 200
 
@@ -2228,8 +2296,9 @@ def get_milestone():
     finally:
         session.close()
 
+
 # update api milestone
-@app.route('/milestone', methods=['PUT'])
+@app.route('/api/milestone', methods=['PUT'])
 @jwt_required()
 def update_milestone():
     session = Session()
@@ -2238,12 +2307,11 @@ def update_milestone():
         serial_number = data.get('serial_number')
         mentor_id = data.get('mentor_id')
         user_id = data.get('user_id')
-        milestone = data.get('milestone')
+        new_milestone = data.get('milestone')
 
-        if not serial_number or not mentor_id or not user_id or milestone is None:
+        if not serial_number or not mentor_id or not user_id or new_milestone is None:
             return jsonify({"error": "serial_number, mentor_id, user_id, and milestone are required"}), 400
 
-        # Fetch the existing milestone entry
         milestone_entry = session.query(UserMentorship).filter_by(
             serial_number=serial_number,
             mentor_id=mentor_id,
@@ -2253,8 +2321,16 @@ def update_milestone():
         if not milestone_entry:
             return jsonify({"error": "No milestone found for the given serial_number, mentor_id, and user_id"}), 404
 
-        # Replace milestone with new data
-        milestone_entry.milestone = milestone  # Replacing the JSONB field
+        # If milestone field is None, initialize as empty list
+        if milestone_entry.milestone is None:
+            milestone_entry.milestone = []
+
+        # Append new milestone object
+        if isinstance(milestone_entry.milestone, list):
+            milestone_entry.milestone.append(new_milestone)
+        else:
+            # If milestone is not a list, convert to list
+            milestone_entry.milestone = [milestone_entry.milestone, new_milestone]
 
         # Update other fields if provided
         if 'check_id' in data:
@@ -2263,14 +2339,14 @@ def update_milestone():
             milestone_entry.check_meeting_id = data['check_meeting_id']
 
         session.commit()
-
-        return jsonify({"message": "Milestone updated successfully"}), 200
+        return jsonify({"message": "Milestone appended successfully"}), 200
 
     except Exception as e:
         session.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         session.close()
+
 
 
 # milestone check in meeting
@@ -3407,5 +3483,9 @@ def delete_mentors():
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+                    
+
+
 
                     
