@@ -478,16 +478,22 @@ def login():
 
     # Check if user details are filled
     data_fill = user.details.data_filled if user.details else False
-
-    access_token = create_access_token(identity=username, expires_delta=False)
     user_id = user.id
 
+    # Check if user is a mentor in Newmentortable
+    is_mentor = session.query(Newmentor).filter_by(user_id=user_id).first() is not None
+
+    access_token = create_access_token(identity=username, expires_delta=False)
+
     session.close()
+
     return jsonify({
         "access_token": access_token,
         "data_fill": data_fill,
-        "user_id": user_id
+        "user_id": user_id,
+        "is_mentor": is_mentor
     }), 200
+
 
 
 @app.route('/register_admin', methods=['POST'])
