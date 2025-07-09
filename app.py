@@ -480,8 +480,15 @@ def login():
     data_fill = user.details.data_filled if user.details else False
 
     access_token = create_access_token(identity=username, expires_delta=False)
+    user_id = user.id
+
     session.close()
-    return jsonify({"access_token": access_token, "data_fill": data_fill}), 200
+    return jsonify({
+        "access_token": access_token,
+        "data_fill": data_fill,
+        "user_id": user_id
+    }), 200
+
 
 @app.route('/register_admin', methods=['POST'])
 def register_admin():
