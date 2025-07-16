@@ -3221,34 +3221,33 @@ def submit_contact():
 
 
 #basic info api
+from flask_jwt_extended import jwt_required
+
 @app.route('/api/basic-info', methods=['POST'])
-@jwt_required()
+@jwt_required()  # Still require authentication
 def create_basic_info():
     data = request.get_json()
-    
-    # Get the current logged-in user's ID from JWT
-    current_user_id = get_jwt_identity()
 
-    # Validate required field: emailid (useruniqid now comes from JWT)
-    if 'emailid' not in data:
-        return jsonify({'error': 'Missing required field: emailid'}), 400
+    # Validate required fields
+    if 'emailid' not in data or 'useruniqid' not in data:
+        return jsonify({'error': 'Missing required field: emailid or useruniqid'}), 400
 
     session = Session()
 
     try:
-        # Check if basic_info already exists for this emailid or user ID
+        # Check if basic_info already exists for this emailid or useruniqid
         existing_user = session.query(BasicInfo).filter(
             (BasicInfo.emailid == data['emailid']) |
-            (BasicInfo.useruniqid == str(current_user_id))  # useruniqid as string
+            (BasicInfo.useruniqid == data['useruniqid'])
         ).first()
 
         if existing_user:
             return jsonify({'error': 'This user already has a basic_info record'}), 400
 
-        # Create new basic_info record
+        # Create new basic_info record using manually provided useruniqid
         new_info = BasicInfo(
             emailid=data['emailid'],
-            useruniqid=str(current_user_id),
+            useruniqid=data['useruniqid'],
             firstname=data.get('firstname'),
             lastname=data.get('lastname'),
             high_education=data.get('high_education'),
@@ -3266,6 +3265,7 @@ def create_basic_info():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
         
         
 @app.route('/api/basic-info', methods=['GET'])
