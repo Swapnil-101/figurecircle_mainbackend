@@ -3220,11 +3220,8 @@ def submit_contact():
         session.close()
 
 
-#basic info api
-from flask_jwt_extended import jwt_required
 
 @app.route('/api/basic-info', methods=['POST'])
-@jwt_required()  # Still require authentication
 def create_basic_info():
     data = request.get_json()
 
