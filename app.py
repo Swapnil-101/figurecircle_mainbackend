@@ -477,7 +477,7 @@ def login():
         return jsonify({"message": "Invalid username or password"}), 401
 
     # Check if user details are filled
-    data_fill = user.details.data_filled if user.details else False
+    data_fill = True
     user_id = user.id
 
     # Check if user is a mentor in Newmentortable
