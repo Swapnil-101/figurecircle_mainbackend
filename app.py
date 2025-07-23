@@ -99,6 +99,7 @@ class BasicInfo(Base):
     high_education = Column(String(150))
     interested_stream = Column(String(150))
     data_filed = Column(Boolean, default=False)
+    role_based = Column(String(150))
 
 # new mentor table
 class Newmentor(Base):
@@ -3241,6 +3242,14 @@ def create_basic_info():
         if existing_user:
             return jsonify({'error': 'This user already has a basic_info record'}), 400
 
+        if data.get('role_based') is None:
+            return jsonify({'error': 'role_based field is required'}), 400
+        
+        role_based=data.get('role_based')
+        print("role_based==>",role_based)
+        
+
+
         # Create new basic_info record using manually provided useruniqid
         new_info = BasicInfo(
             emailid=data['emailid'],
@@ -3249,7 +3258,8 @@ def create_basic_info():
             lastname=data.get('lastname'),
             high_education=data.get('high_education'),
             interested_stream=data.get('interested_stream'),
-            data_filed=data.get('data_filed', False)  # Default to False
+            data_filed=data.get('data_filed', False),  # Default to False
+            role_based=data.get('role_based')  # Default to None
         )
 
         session.add(new_info)
@@ -3331,6 +3341,8 @@ def update_basic_info():
             user_info.interested_stream = data['interested_stream']
         if 'data_filed' in data:
             user_info.data_filed = data['data_filed']
+        if 'role_based' in data:
+            user_info.role_based = data['role_based']
 
         # Commit changes
         session.commit()
