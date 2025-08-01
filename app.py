@@ -3248,6 +3248,11 @@ def create_intent():
         email = user_info.emailid
         useruniqid = user_info.useruniqid
 
+        # Check if intent already exists for this user
+        existing_intent = session.query(Intent).filter_by(useruniqid=useruniqid).first()
+        if existing_intent:
+            return jsonify({'error': 'Intent already exists for this user'}), 400
+
         data = request.get_json()
         area_exploring = data.get('area_exploring')
         goal_challenge = data.get('goal_challenge')
