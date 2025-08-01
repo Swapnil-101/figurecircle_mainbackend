@@ -29,6 +29,7 @@ from fuzzywuzzy import process
 from flasgger import Swagger
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy import PickleType
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -269,7 +270,7 @@ class Msg(Base):
     receiver = relationship("User", foreign_keys=[receiver_id], backref="received_messages")
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
-Base.metadata.create_all(engine)
+
 
 
 # class Notification(Base):
@@ -322,6 +323,19 @@ class Schedule(Base):
     mentor_email = Column(String, nullable=False)
     user_id = Column(Integer, nullable=False)
     duration = Column(Integer, nullable=False)
+
+
+#intent table 
+class Intent(Base):
+    __tablename__ = 'intent'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    useruniqid = Column(String(100), nullable=False)
+    email = Column(String(255), nullable=False)
+    area_exploring = Column(String(255), nullable=True)
+    goal_challenge = Column(String(255), nullable=True)
+    support_types = Column(JSON, nullable=True)  # Store as JSON array
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     
 Session = sessionmaker(bind=engine)
@@ -3221,6 +3235,66 @@ def submit_contact():
         session.close()
 
 
+@app.route('/api/intent', methods=['POST'])
+@jwt_required()
+def create_intent():
+    current_user_id = get_jwt_identity()
+    session = Session()
+    try:
+        # Fetch user email from BasicInfo using useruniqid
+        user_info = session.query(BasicInfo).filter_by(useruniqid=str(current_user_id)).first()
+        if not user_info:
+            return jsonify({'error': 'User basic info not found'}), 404
+        email = user_info.emailid
+        useruniqid = user_info.useruniqid
+
+        data = request.get_json()
+        area_exploring = data.get('area_exploring')
+        goal_challenge = data.get('goal_challenge')
+        support_types = data.get('support_types', [])  # Should be a list/array
+
+        # Save intent
+        new_intent = Intent(
+            useruniqid=useruniqid,
+            email=email,
+            area_exploring=area_exploring,
+            goal_challenge=goal_challenge,
+            support_types=support_types
+        )
+        session.add(new_intent)
+        session.commit()
+        return jsonify({'message': 'Intent saved successfully', 'id': new_intent.id}), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/intent', methods=['GET'])
+@jwt_required()
+def get_intent():
+    current_user_id = get_jwt_identity()
+    session = Session()
+    try:
+        intent = session.query(Intent).filter_by(useruniqid=str(current_user_id)).order_by(Intent.created_at.desc()).first()
+        if not intent:
+            return jsonify({'error': 'No intent found for this user'}), 404
+        result = {
+            'id': intent.id,
+            'useruniqid': intent.useruniqid,
+            'email': intent.email,
+            'area_exploring': intent.area_exploring,
+            'goal_challenge': intent.goal_challenge,
+            'support_types': intent.support_types,
+            'created_at': intent.created_at.isoformat() if intent.created_at else None
+        }
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
 
 @app.route('/api/basic-info', methods=['POST'])
 def create_basic_info():
@@ -3299,14 +3373,12 @@ def get_basic_info():
             'lastname': user_info.lastname,
             'high_education': user_info.high_education,
             'interested_stream': user_info.interested_stream,
-            'data_filed': user_info.data_filed
+            'data_filed': user_info.data_filed,
+            'role_based': user_info.role_based
         }
-
         return jsonify(result), 200
-
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
     finally:
         session.close()
         
@@ -3510,6 +3582,8 @@ def delete_mentors():
     return jsonify({"message": "All mentors deleted successfully"}), 200
 
 
+
+
 if __name__ == '__main__':
     app.run(debug=True)
 
@@ -3518,3 +3592,4 @@ if __name__ == '__main__':
 
 
                     
+
