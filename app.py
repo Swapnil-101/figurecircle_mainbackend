@@ -112,6 +112,9 @@ class Newmentor(Base):
     email = Column(String(255), nullable=False, unique=True)
     phone = Column(String(20))
     linkedin = Column(String(255), nullable=False)
+    work_experience = Column(String(255), nullable=False)
+    current_role = Column(String(255), nullable=False)
+    interested_field = Column(String(255), nullable=False)
     expertise = Column(String(255), nullable=False)
     degree = Column(String(255), nullable=False)
     background = Column(Text, nullable=False)
@@ -121,6 +124,7 @@ class Newmentor(Base):
     resume = Column(String(500))
     availability = Column(JSON)  # New column to store availability as JSON
     created_at = Column(DateTime, default=datetime.utcnow)
+    current_role = Column('current_role', None)
     assignments = relationship('UserMentorAssignment', back_populates='mentor')
 
 class Review(Base):
@@ -2788,6 +2792,9 @@ def add_new_mentor():
         profile_picture = data.get('profile_picture', None)
         resume = data.get('resume', None)
         availability = data.get('availability', [])  # New field for availability
+        current_role = data.get('current_role', None)
+        work_experience = data.get('work_experience', None)
+        interested_field = data.get('interested_field', None)
        
         # Validate availability data
         if availability:
@@ -2813,7 +2820,10 @@ def add_new_mentor():
             milestones=milestones,
             profile_picture=profile_picture,
             resume=resume,
-            availability=availability  # Add availability to the new mentor
+            availability=availability,  # Add availability to the new mentor
+            current_role=current_role,
+            work_experience=work_experience,
+            interested_field=interested_field
         )
        
         session.add(new_mentor)
