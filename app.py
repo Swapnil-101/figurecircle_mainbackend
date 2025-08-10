@@ -101,6 +101,7 @@ class BasicInfo(Base):
     interested_stream = Column(String(150))
     data_filed = Column(Boolean, default=False)
     role_based = Column(String(150))
+    work_experience = Column(String(255), nullable=True)
 
 # new mentor table
 class Newmentor(Base):
@@ -3348,7 +3349,8 @@ def create_basic_info():
             high_education=data.get('high_education'),
             interested_stream=data.get('interested_stream'),
             data_filed=data.get('data_filed', False),  # Default to False
-            role_based=data.get('role_based')  # Default to None
+            role_based=data.get('role_based'),  # Default to None
+            work_experience=data.get('work_experience')
         )
 
         session.add(new_info)
@@ -3389,7 +3391,8 @@ def get_basic_info():
             'high_education': user_info.high_education,
             'interested_stream': user_info.interested_stream,
             'data_filed': user_info.data_filed,
-            'role_based': user_info.role_based
+            'role_based': user_info.role_based,
+            'work_experience': user_info.work_experience
         }
         return jsonify(result), 200
     except Exception as e:
