@@ -329,6 +329,28 @@ class Schedule(Base):
     user_id = Column(Integer, nullable=False)
     duration = Column(Integer, nullable=False)
 
+#trail meeting
+class Schedule(Base):
+    __tablename__ = 'trial_schedules'
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    email = Column(String, nullable=False)
+    start_datetime = Column(DateTime, nullable=False)
+    end_datetime = Column(DateTime, nullable=False)
+    link = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # New field
+    timezone = Column(String, nullable=False)  # e.g., 'UTC', 'Asia/Kolkata'
+
+    # Mentor details
+    mentor_id = Column(Integer, nullable=False)
+    mentor_name = Column(String, nullable=False)
+    mentor_email = Column(String, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    duration = Column(Integer, nullable=False)
+
 
 #intent table 
 class Intent(Base):
@@ -884,6 +906,54 @@ def search_degree():
     # Fallback - shouldn't be needed due to "always return" logic
     return jsonify({"error": "No relevant role found"}), 404
 
+
+@app.route('/dream-list', methods=['GET'])
+def dream_list():
+    query = request.args.get('degree', '').strip().lower()
+
+    if not query:
+        return jsonify({"error": "Please provide a degree name"}), 400
+
+    session = Session()
+
+    # Fetch all education entries
+    education_entries = session.query(education).all()
+
+    # Create a map of role -> entry
+    role_map = {entry.role.strip().lower(): entry for entry in education_entries}
+
+    matched_roles = []
+
+    # If exact match exists, include it first
+    if query in role_map:
+        exact_edu = role_map[query]
+        matched_roles.append({
+            "matched_role": exact_edu.role,
+            "match_type": "exact",
+            "confidence": 100
+        })
+        # Add up to 3 more fuzzy matches excluding the exact match
+        candidates = [role for role in role_map.keys() if role != query]
+        fuzzy_matches = process.extract(query, candidates, limit=3)
+    else:
+        # No exact match; get top 4 fuzzy matches
+        fuzzy_matches = process.extract(query, role_map.keys(), limit=4)
+
+    # Append fuzzy matches
+    for best_match, score in (fuzzy_matches or []):
+        edu = role_map[best_match]
+        matched_roles.append({
+            "matched_role": edu.role,
+            "match_type": "fuzzy",
+            "confidence": score
+        })
+
+    if matched_roles:
+        return jsonify({"matched_roles": matched_roles}), 200
+
+    # Fallback - shouldn't be needed due to "always return" logic
+    return jsonify({"error": "No relevant role found"}), 404
+
 @app.route('/streams', methods=['POST'])
 @jwt_required()
 def create_stream():
@@ -1127,6 +1197,22 @@ def create_schedule():
         if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime, duration, timezone]):
             return jsonify({"error": "Missing required fields"}), 400
 
+        # Prevent overlapping meetings for either the user or the mentor
+        overlapping = (
+            session.query(Schedule)
+            .filter(
+                or_(Schedule.user_id == user_id, Schedule.mentor_id == mentor_id),
+                Schedule.start_datetime < end_datetime,
+                Schedule.end_datetime > start_datetime,
+            )
+            .first()
+        )
+
+        if overlapping:
+            return jsonify({
+                "error": "Overlapping meeting exists for the user or mentor in the selected time range"
+            }), 409
+
         # Create a new schedule entry
         schedule = Schedule(
             name=name,
@@ -1145,6 +1231,69 @@ def create_schedule():
         session.commit()
 
         return jsonify({"message": "Schedule created successfully!", "id": schedule.id}), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 400
+    finally:
+        session.close()
+
+@app.route('/api/trial_ schedule', methods=['POST'])
+def create_trial_schedule():
+    session = Session()
+    data = request.json
+
+    try:
+        # Extract data from the request
+        name = data.get('name')
+        email = data.get('email')
+        start_datetime = datetime.fromisoformat(data.get('start_datetime'))
+        end_datetime = datetime.fromisoformat(data.get('end_datetime'))
+        link = data.get('link')
+        timezone = data.get('timezone')  # New
+        user_id = data.get('user_id')
+        mentor_id = data.get('mentor_id')
+        mentor_name = data.get('mentor_name')
+        mentor_email = data.get('mentor_email')
+        duration = data.get('duration')
+
+        # Validate required fields
+        if not all([user_id, mentor_id, mentor_name, mentor_email, start_datetime, end_datetime, duration, timezone]):
+            return jsonify({"error": "Missing required fields"}), 400
+
+        # Prevent overlapping meetings for either the user or the mentor
+        overlapping = (
+            session.query(Schedule)
+            .filter(
+                or_(Schedule.user_id == user_id, Schedule.mentor_id == mentor_id),
+                Schedule.start_datetime < end_datetime,
+                Schedule.end_datetime > start_datetime,
+            )
+            .first()
+        )
+
+        if overlapping:
+            return jsonify({
+                "error": "Overlapping meeting exists for the user or mentor in the selected time range"
+            }), 409
+
+        # Create a new schedule entry
+        schedule = Schedule(
+            name=name,
+            email=email,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            link=link,
+            timezone=timezone,  # Add here
+            user_id=user_id,
+            mentor_id=mentor_id,
+            mentor_name=mentor_name,
+            mentor_email=mentor_email,
+            duration=duration
+        )
+        session.add(schedule)
+        session.commit()
+
+        return jsonify({"message": "trial Schedule created successfully!", "id": schedule.id}), 201
     except Exception as e:
         session.rollback()
         return jsonify({"error": str(e)}), 400
