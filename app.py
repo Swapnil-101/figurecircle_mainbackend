@@ -2947,13 +2947,10 @@ def add_new_mentor():
         interested_field = data.get('interested_field', None)
        
         # Validate availability data
-        # if availability:
-        #     for slot in availability:
-        #         if not all(key in slot for key in ['day', 'startTime', 'endTime']):
-        #             return jsonify({'error': 'Invalid availability format'}), 400
-        
-        # if not all([user_id, name, email, linkedin, expertise, degree, background, milestones]):
-        #     return jsonify({'error': 'Missing required fields'}), 400
+        if availability:
+            for slot in availability:
+                if not all(key in slot for key in ['day', 'startTime', 'endTime']):
+                    return jsonify({'error': 'Invalid availability format'}), 400
         
         print("availability==>",availability)
        
