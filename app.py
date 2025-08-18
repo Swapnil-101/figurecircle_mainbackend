@@ -354,6 +354,7 @@ class Schedule(Base):
 #intent table 
 class Intent(Base):
     __tablename__ = 'intent'
+    __table_args__ = (UniqueConstraint('user_id', 'mentor_id', name='_user_mentor_intent_uc'),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     useruniqid = Column(String(100), nullable=False)
@@ -362,6 +363,8 @@ class Intent(Base):
     goal_challenge = Column(String(255), nullable=True)
     support_types = Column(JSON, nullable=True)  # Store as JSON array
     created_at = Column(DateTime, default=datetime.utcnow)
+    user_id = Column(Integer, nullable=False)
+    mentor_id = Column(Integer, nullable=False)
 
     
 Session = sessionmaker(bind=engine)
@@ -3429,25 +3432,37 @@ def submit_contact():
 @app.route('/api/intent', methods=['POST'])
 @jwt_required()
 def create_intent():
-    current_user_id = get_jwt_identity()
     session = Session()
     try:
-        # Fetch user email from BasicInfo using useruniqid
-        user_info = session.query(BasicInfo).filter_by(useruniqid=str(current_user_id)).first()
-        if not user_info:
-            return jsonify({'error': 'User basic info not found'}), 404
-        email = user_info.emailid
-        useruniqid = user_info.useruniqid
-
-        # Check if intent already exists for this user
-        existing_intent = session.query(Intent).filter_by(useruniqid=useruniqid).first()
-        if existing_intent:
-            return jsonify({'error': 'Intent already exists for this user'}), 400
-
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Request body must be JSON'}), 400
+
+        user_id = data.get('user_id')
+        mentor_id = data.get('mentor_id')
         area_exploring = data.get('area_exploring')
         goal_challenge = data.get('goal_challenge')
         support_types = data.get('support_types', [])  # Should be a list/array
+
+        if not user_id or not mentor_id:
+            return jsonify({'error': 'user_id and mentor_id are required'}), 400
+
+        # Validate user exists and derive email
+        user = session.query(User).filter_by(id=int(user_id)).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        email = user.username  # username acts as email in this system
+
+        # Fetch useruniqid from BasicInfo using email
+        user_info = session.query(BasicInfo).filter_by(emailid=email).first()
+        if not user_info:
+            return jsonify({'error': 'User basic info not found'}), 404
+        useruniqid = user_info.useruniqid
+
+        # Enforce uniqueness on (user_id, mentor_id)
+        existing_intent = session.query(Intent).filter_by(user_id=int(user_id), mentor_id=int(mentor_id)).first()
+        if existing_intent:
+            return jsonify({'error': 'Intent already exists for this user and mentor'}), 400
 
         # Save intent
         new_intent = Intent(
@@ -3455,7 +3470,9 @@ def create_intent():
             email=email,
             area_exploring=area_exploring,
             goal_challenge=goal_challenge,
-            support_types=support_types
+            support_types=support_types,
+            user_id=int(user_id),
+            mentor_id=int(mentor_id)
         )
         session.add(new_intent)
         session.commit()
