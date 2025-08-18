@@ -114,18 +114,17 @@ class Newmentor(Base):
     phone = Column(String(20))
     linkedin = Column(String(255), nullable=False)
     work_experience = Column(String(255), nullable=False)
-    current_role = Column(String(255), nullable=False)
-    interested_field = Column(String(255), nullable=False)
-    expertise = Column(String(255), nullable=False)
-    degree = Column(String(255), nullable=False)
-    background = Column(Text, nullable=False)
-    fee = Column(String(255))
-    milestones = Column(Integer, nullable=False)
-    profile_picture = Column(String(500))
-    resume = Column(String(500))
-    availability = Column(JSON)  # New column to store availability as JSON
+    current_role = Column(String(255), nullable=True)
+    interested_field = Column(String(255), nullable=True)
+    expertise = Column(String(255), nullable=True)
+    degree = Column(String(255), nullable=True)
+    background = Column(Text, nullable=True)
+    fee = Column(String(255), nullable=True)
+    milestones = Column(Integer, nullable=True)
+    profile_picture = Column(String(500), nullable=True)
+    resume = Column(String(500), nullable=True)
+    availability = Column(JSON, nullable=True)  # New column to store availability as JSON
     created_at = Column(DateTime, default=datetime.utcnow)
-    current_role = Column('current_role', None)
     assignments = relationship('UserMentorAssignment', back_populates='mentor')
 
 class Review(Base):
@@ -1451,16 +1450,27 @@ def get_schedule_by_link():
 def get_feedback():
     user_id = request.args.get('user_id')  # Get user_id from query params
     mentor_id = request.args.get('mentor_id')  # Get mentor_id from query params
+    check_meeting_id = request.args.get('check_meeting_id')  # Optional: filter by check_meeting_id
     session = Session()
 
     # Ensure at least one identifier is provided
-    if not user_id and not mentor_id:
-        return jsonify({'error': 'Missing user_id or mentor_id parameter'}), 400
+    if not user_id and not mentor_id and not check_meeting_id:
+        return jsonify({'error': 'Missing user_id, mentor_id, or check_meeting_id parameter'}), 400
 
-    # Query feedback based on either user_id or mentor_id
-    feedback_list = session.query(Feedback).filter(
-        (Feedback.user_id == user_id) | (Feedback.mentor_id == mentor_id)
-    ).all()
+    # Build dynamic filters
+    or_filters = []
+    if user_id:
+        or_filters.append(Feedback.user_id == user_id)
+    if mentor_id:
+        or_filters.append(Feedback.mentor_id == mentor_id)
+
+    query = session.query(Feedback)
+    if or_filters:
+        query = query.filter(or_(*or_filters)) if len(or_filters) > 1 else query.filter(or_filters[0])
+    if check_meeting_id:
+        query = query.filter(Feedback.check_meeting_id == check_meeting_id)
+
+    feedback_list = query.all()
 
     feedback_data = [
         {
@@ -3187,6 +3197,30 @@ def recommend_mentors():
     session = Session()
 
     try:
+        # If query param allmentor=true, return all mentors without fuzzy filtering
+        allmentor_flag = (request.args.get('allmentor', '') or '').strip().lower()
+        if allmentor_flag in ('true', '1', 'yes'):            
+            recommended_mentors = session.query(Newmentor).all()
+            mentor_data = [
+                {
+                    'mentor_id': m.mentor_id,
+                    'name': m.name,
+                    'email': m.email,
+                    'phone': m.phone,
+                    'linkedin': m.linkedin,
+                    'expertise': m.expertise,
+                    'degree': m.degree,
+                    'background': m.background,
+                    'fee': m.fee,
+                    'milestones': m.milestones,
+                    'profile_picture': m.profile_picture,
+                    'resume': m.resume,
+                    'availability': m.availability,
+                    'created_at': m.created_at
+                } for m in recommended_mentors
+            ]
+            return jsonify({'recommended_mentors': mentor_data}), 200
+
         user = session.query(User).filter_by(username=current_user_email).first()
         if not user:
             return jsonify({'error': 'User not found'}), 404
