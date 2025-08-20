@@ -124,6 +124,7 @@ class Newmentor(Base):
     profile_picture = Column(String(500), nullable=True)
     resume = Column(String(500), nullable=True)
     availability = Column(JSON, nullable=True)  # New column to store availability as JSON
+    intent_price = Column(JSON, nullable=True)  # New column to store intent and price pairs as JSON
     created_at = Column(DateTime, default=datetime.utcnow)
     assignments = relationship('UserMentorAssignment', back_populates='mentor')
 
@@ -2955,6 +2956,7 @@ def add_new_mentor():
         profile_picture = data.get('profile_picture', None)
         resume = data.get('resume', None)
         availability = data.get('availability', [])  # New field for availability
+        intent_price = data.get('intent_price', [])  # New field for intent and price pairs
         current_role = data.get('current_role', None)
         work_experience = data.get('work_experience', None)
         interested_field = data.get('interested_field', None)
@@ -2965,7 +2967,19 @@ def add_new_mentor():
                 if not all(key in slot for key in ['day', 'startTime', 'endTime']):
                     return jsonify({'error': 'Invalid availability format'}), 400
         
+        # Validate intent_price data
+        if intent_price:
+            for item in intent_price:
+                if not all(key in item for key in ['intent', 'price']):
+                    return jsonify({'error': 'Invalid intent_price format. Each item must have "intent" and "price" fields'}), 400
+                # Validate that price is a valid number
+                try:
+                    float(item['price'])
+                except (ValueError, TypeError):
+                    return jsonify({'error': 'Price must be a valid number'}), 400
+        
         print("availability==>",availability)
+        print("intent_price==>",intent_price)
        
         new_mentor = Newmentor(
             user_id=user_id,
@@ -2981,6 +2995,7 @@ def add_new_mentor():
             profile_picture=profile_picture,
             resume=resume,
             availability=availability,  # Add availability to the new mentor
+            intent_price=intent_price,  # Add intent_price to the new mentor
             current_role=current_role,
             work_experience=work_experience,
             interested_field=interested_field
@@ -2991,7 +3006,8 @@ def add_new_mentor():
         return jsonify({
             'message': 'New mentor added successfully', 
             'mentor_id': new_mentor.mentor_id,
-            'availability': availability
+            'availability': availability,
+            'intent_price': intent_price
         }), 201
     except IntegrityError:
         session.rollback()
@@ -3219,7 +3235,8 @@ def recommend_mentors():
                     'profile_picture': m.profile_picture,
                     'resume': m.resume,
                     'availability': m.availability,
-                    'created_at': m.created_at
+                    'created_at': m.created_at,
+                    'intent_price': m.intent_price
                 } for m in recommended_mentors
             ]
             return jsonify({'recommended_mentors': mentor_data}), 200
@@ -3266,7 +3283,8 @@ def recommend_mentors():
                 'profile_picture': m.profile_picture,
                 'resume': m.resume,
                 'availability': m.availability,
-                'created_at': m.created_at
+                'created_at': m.created_at,
+                'intent_price': m.intent_price
             } for m in recommended_mentors
         ]
 
