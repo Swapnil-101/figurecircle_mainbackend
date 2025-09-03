@@ -102,6 +102,9 @@ class BasicInfo(Base):
     data_filed = Column(Boolean, default=False)
     role_based = Column(String(150))
     work_experience = Column(String(255), nullable=True)
+    industry = Column(String(150), nullable=True)
+    role = Column(String(150), nullable=True)
+    intent = Column(String(255), nullable=True)
 
 # new mentor table
 class Newmentor(Base):
@@ -2960,6 +2963,9 @@ def add_new_mentor():
         current_role = data.get('current_role', None)
         work_experience = data.get('work_experience', None)
         interested_field = data.get('interested_field', None)
+        industry = data.get('industry')
+        role = data.get('role')
+        intent = data.get('intent')
        
         # Validate availability data
         if availability:
@@ -2998,7 +3004,10 @@ def add_new_mentor():
             intent_price=intent_price,  # Add intent_price to the new mentor
             current_role=current_role,
             work_experience=work_experience,
-            interested_field=interested_field
+            interested_field=interested_field,
+            industry=industry,
+            role=role,
+            intent=intent
         )
        
         session.add(new_mentor)
@@ -3565,7 +3574,10 @@ def create_basic_info():
             interested_stream=data.get('interested_stream'),
             data_filed=data.get('data_filed', False),  # Default to False
             role_based=data.get('role_based'),  # Default to None
-            work_experience=data.get('work_experience')
+            work_experience=data.get('work_experience'),
+            industry=data.get('industry'),
+            role=data.get('role'),
+            intent=data.get('intent')
         )
 
         session.add(new_info)
@@ -3607,7 +3619,10 @@ def get_basic_info():
             'interested_stream': user_info.interested_stream,
             'data_filed': user_info.data_filed,
             'role_based': user_info.role_based,
-            'work_experience': user_info.work_experience
+            'work_experience': user_info.work_experience,
+            'industry': user_info.industry,
+            'role': user_info.role,
+            'intent': user_info.intent,
         }
         return jsonify(result), 200
     except Exception as e:
@@ -3648,6 +3663,12 @@ def update_basic_info():
             user_info.data_filed = data['data_filed']
         if 'role_based' in data:
             user_info.role_based = data['role_based']
+        if 'industry' in data:
+            user_info.industry = data['industry']
+        if 'role' in data:
+            user_info.role = data['role']
+        if 'intent' in data:
+            user_info.intent = data['intent']
 
         # Commit changes
         session.commit()
