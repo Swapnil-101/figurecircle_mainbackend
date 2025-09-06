@@ -105,6 +105,7 @@ class BasicInfo(Base):
     industry = Column(String(150), nullable=True)
     role = Column(String(150), nullable=True)
     intent = Column(String(255), nullable=True)
+    bachelor = Column(String(255), nullable=True)
 
 # new mentor table
 class Newmentor(Base):
@@ -3577,7 +3578,8 @@ def create_basic_info():
             work_experience=data.get('work_experience'),
             industry=data.get('industry'),
             role=data.get('role'),
-            intent=data.get('intent')
+            intent=data.get('intent'),
+            bachelor=data.get('bachelor')
         )
 
         session.add(new_info)
@@ -3623,6 +3625,7 @@ def get_basic_info():
             'industry': user_info.industry,
             'role': user_info.role,
             'intent': user_info.intent,
+            'bachelors_degree': user_info.bachelors_degree,
         }
         return jsonify(result), 200
     except Exception as e:
@@ -3669,6 +3672,8 @@ def update_basic_info():
             user_info.role = data['role']
         if 'intent' in data:
             user_info.intent = data['intent']
+        if 'bachelor' in data:
+            user_info.intent = data['bachelor']
 
         # Commit changes
         session.commit()
