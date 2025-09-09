@@ -3625,7 +3625,7 @@ def get_basic_info():
             'industry': user_info.industry,
             'role': user_info.role,
             'intent': user_info.intent,
-            'bachelors_degree': user_info.bachelors_degree,
+            'bachelor': user_info.bachelor,
         }
         return jsonify(result), 200
     except Exception as e:
@@ -3673,7 +3673,7 @@ def update_basic_info():
         if 'intent' in data:
             user_info.intent = data['intent']
         if 'bachelor' in data:
-            user_info.intent = data['bachelor']
+            user_info.bachelor = data['bachelor']
 
         # Commit changes
         session.commit()
