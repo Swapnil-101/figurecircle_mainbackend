@@ -2964,9 +2964,6 @@ def add_new_mentor():
         current_role = data.get('current_role', None)
         work_experience = data.get('work_experience', None)
         interested_field = data.get('interested_field', None)
-        industry = data.get('industry')
-        role = data.get('role')
-        intent = data.get('intent')
        
         # Validate availability data
         if availability:
@@ -3005,10 +3002,7 @@ def add_new_mentor():
             intent_price=intent_price,  # Add intent_price to the new mentor
             current_role=current_role,
             work_experience=work_experience,
-            interested_field=interested_field,
-            industry=industry,
-            role=role,
-            intent=intent
+            interested_field=interested_field
         )
        
         session.add(new_mentor)
