@@ -530,7 +530,7 @@ def login():
     user_id = user.id
 
     # Check if user is a mentor in Newmentortable
-    is_mentor = session.query(Newmentor).filter_by(user_id=user_id).first() is not None
+    is_mentor = session.query(Newmentor).filter_by(email=username).first() is not None
 
     access_token = create_access_token(identity=username, expires_delta=False)
 
