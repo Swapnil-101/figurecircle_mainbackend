@@ -333,8 +333,8 @@ class Schedule(Base):
     user_id = Column(Integer, nullable=False)
     duration = Column(Integer, nullable=False)
 
-#trail meeting
-class Schedule(Base):
+#trial meeting
+class TrialSchedule(Base):
     __tablename__ = 'trial_schedules'
 
     id = Column(Integer, primary_key=True, index=True)
@@ -370,6 +370,24 @@ class Intent(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     user_id = Column(Integer, nullable=False)
     mentor_id = Column(Integer, nullable=False)
+
+# Meeting Notification table
+class MeetingNotification(Base):
+    __tablename__ = 'meeting_notifications'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)  # The user who will receive the notification
+    mentor_id = Column(Integer, nullable=False)  # The mentor involved
+    schedule_id = Column(Integer, nullable=True)  # Reference to the schedule/meeting
+    notification_type = Column(String(50), nullable=False)  # 'meeting_scheduled', 'meeting_reminder', 'meeting_cancelled', 'message'
+    title = Column(String(255), nullable=False)  # Notification title
+    message = Column(Text, nullable=False)  # Notification message
+    meeting_datetime = Column(DateTime, nullable=True)  # When the meeting is scheduled
+    meeting_link = Column(String(500), nullable=True)  # Meeting link if available
+    is_read = Column(Boolean, default=False)  # Whether the notification has been read
+    created_at = Column(DateTime, default=datetime.utcnow)  # When notification was created
+    read_at = Column(DateTime, nullable=True)  # When notification was read
+    notification_data = Column(JSON, nullable=True)  # Additional data like sender info for messages
 
     
 Session = sessionmaker(bind=engine)
@@ -1237,6 +1255,39 @@ def create_schedule():
         session.add(schedule)
         session.commit()
 
+        # Send meeting notifications to both user and mentor
+        try:
+            # Notification for user
+            user_notification_id = send_meeting_notification(
+                user_id=user_id,
+                mentor_id=mentor_id,
+                notification_type='meeting_scheduled',
+                title='Meeting Scheduled',
+                message=f'Your meeting with {mentor_name} has been scheduled for {start_datetime.strftime("%Y-%m-%d at %H:%M")}',
+                schedule_id=schedule.id,
+                meeting_datetime=start_datetime,
+                meeting_link=link,
+                notification_data={'mentor_name': mentor_name, 'duration': duration}
+            )
+            
+            # Notification for mentor
+            mentor_notification_id = send_meeting_notification(
+                user_id=mentor_id,  # For mentor, we use mentor_id as user_id in the notification
+                mentor_id=mentor_id,
+                notification_type='meeting_scheduled',
+                title='Meeting Scheduled',
+                message=f'You have a meeting scheduled with {name} for {start_datetime.strftime("%Y-%m-%d at %H:%M")}',
+                schedule_id=schedule.id,
+                meeting_datetime=start_datetime,
+                meeting_link=link,
+                notification_data={'user_name': name, 'duration': duration}
+            )
+            
+            print(f"Meeting notifications sent - User: {user_notification_id}, Mentor: {mentor_notification_id}")
+        except Exception as e:
+            print(f"Error sending meeting notifications: {str(e)}")
+            # Don't fail the schedule creation if notification fails
+
         return jsonify({"message": "Schedule created successfully!", "id": schedule.id}), 201
     except Exception as e:
         session.rollback()
@@ -1269,11 +1320,11 @@ def create_trial_schedule():
 
         # Prevent overlapping meetings for either the user or the mentor
         overlapping = (
-            session.query(Schedule)
+            session.query(TrialSchedule)
             .filter(
-                or_(Schedule.user_id == user_id, Schedule.mentor_id == mentor_id),
-                Schedule.start_datetime < end_datetime,
-                Schedule.end_datetime > start_datetime,
+                or_(TrialSchedule.user_id == user_id, TrialSchedule.mentor_id == mentor_id),
+                TrialSchedule.start_datetime < end_datetime,
+                TrialSchedule.end_datetime > start_datetime,
             )
             .first()
         )
@@ -1284,7 +1335,7 @@ def create_trial_schedule():
             }), 409
 
         # Create a new schedule entry
-        schedule = Schedule(
+        schedule = TrialSchedule(
             name=name,
             email=email,
             start_datetime=start_datetime,
@@ -1299,6 +1350,39 @@ def create_trial_schedule():
         )
         session.add(schedule)
         session.commit()
+
+        # Send meeting notifications to both user and mentor for trial meeting
+        try:
+            # Notification for user
+            user_notification_id = send_meeting_notification(
+                user_id=user_id,
+                mentor_id=mentor_id,
+                notification_type='meeting_scheduled',
+                title='Trial Meeting Scheduled',
+                message=f'Your trial meeting with {mentor_name} has been scheduled for {start_datetime.strftime("%Y-%m-%d at %H:%M")}',
+                schedule_id=schedule.id,
+                meeting_datetime=start_datetime,
+                meeting_link=link,
+                notification_data={'mentor_name': mentor_name, 'duration': duration, 'meeting_type': 'trial'}
+            )
+            
+            # Notification for mentor
+            mentor_notification_id = send_meeting_notification(
+                user_id=mentor_id,  # For mentor, we use mentor_id as user_id in the notification
+                mentor_id=mentor_id,
+                notification_type='meeting_scheduled',
+                title='Trial Meeting Scheduled',
+                message=f'You have a trial meeting scheduled with {name} for {start_datetime.strftime("%Y-%m-%d at %H:%M")}',
+                schedule_id=schedule.id,
+                meeting_datetime=start_datetime,
+                meeting_link=link,
+                notification_data={'user_name': name, 'duration': duration, 'meeting_type': 'trial'}
+            )
+            
+            print(f"Trial meeting notifications sent - User: {user_notification_id}, Mentor: {mentor_notification_id}")
+        except Exception as e:
+            print(f"Error sending trial meeting notifications: {str(e)}")
+            # Don't fail the schedule creation if notification fails
 
         return jsonify({"message": "trial Schedule created successfully!", "id": schedule.id}), 201
     except Exception as e:
@@ -2916,7 +3000,7 @@ def get_enhanced_progress():
                 "completed": completed_milestones,
                 "pending": pending_milestones
             },
-            "metadata": {
+            "notification_data": {
                 "user_id": int(user_id),
                 "mentor_id": int(mentor_id),
                 "last_updated": milestone_entry.created_at,
@@ -3681,6 +3765,376 @@ def update_basic_info():
     finally:
         session.close()
 
+# Meeting Notification API Endpoints
+@app.route('/api/meeting-notifications', methods=['GET'])
+@jwt_required()
+def get_meeting_notifications():
+    """Get all meeting notifications for the current user"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        # Get user from JWT identity
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get query parameters
+        limit = request.args.get('limit', 50, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        unread_only = request.args.get('unread_only', 'false').lower() == 'true'
+        
+        # Build query
+        query = session.query(MeetingNotification).filter_by(user_id=user.id)
+        
+        if unread_only:
+            query = query.filter_by(is_read=False)
+        
+        notifications = query.order_by(MeetingNotification.created_at.desc()).offset(offset).limit(limit).all()
+        
+        notification_list = [
+            {
+                "id": notif.id,
+                "mentor_id": notif.mentor_id,
+                "schedule_id": notif.schedule_id,
+                "notification_type": notif.notification_type,
+                "title": notif.title,
+                "message": notif.message,
+                "meeting_datetime": notif.meeting_datetime.isoformat() if notif.meeting_datetime else None,
+                "meeting_link": notif.meeting_link,
+                "is_read": notif.is_read,
+                "created_at": notif.created_at.isoformat(),
+                "read_at": notif.read_at.isoformat() if notif.read_at else None,
+                "notification_data": notif.notification_data
+            }
+            for notif in notifications
+        ]
+        
+        return jsonify({"notifications": notification_list}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications/<int:notification_id>/read', methods=['PUT'])
+@jwt_required()
+def mark_notification_read(notification_id):
+    """Mark a specific notification as read"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        # Get user from JWT identity
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Find the notification
+        notification = session.query(MeetingNotification).filter_by(
+            id=notification_id, 
+            user_id=user.id
+        ).first()
+        
+        if not notification:
+            return jsonify({'error': 'Notification not found'}), 404
+        
+        # Mark as read
+        notification.is_read = True
+        notification.read_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({'message': 'Notification marked as read'}), 200
+        
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications/mark-all-read', methods=['PUT'])
+@jwt_required()
+def mark_all_notifications_read():
+    """Mark all notifications as read for the current user"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        # Get user from JWT identity
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Mark all unread notifications as read
+        updated_count = session.query(MeetingNotification).filter_by(
+            user_id=user.id, 
+            is_read=False
+        ).update({
+            'is_read': True,
+            'read_at': datetime.utcnow()
+        })
+        
+        session.commit()
+        
+        return jsonify({
+            'message': f'{updated_count} notifications marked as read'
+        }), 200
+        
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications/unread-count', methods=['GET'])
+@jwt_required()
+def get_unread_notification_count():
+    """Get the count of unread notifications for the current user"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        # Get user from JWT identity
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Count unread notifications
+        unread_count = session.query(MeetingNotification).filter_by(
+            user_id=user.id, 
+            is_read=False
+        ).count()
+        
+        return jsonify({'unread_count': unread_count}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications', methods=['POST'])
+@jwt_required()
+def create_meeting_notification():
+    """Create a new meeting notification (for admin or system use)"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['user_id', 'mentor_id', 'notification_type', 'title', 'message']
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({'error': f'Missing required fields: {", ".join(missing_fields)}'}), 400
+        
+        # Create notification
+        notification = MeetingNotification(
+            user_id=data['user_id'],
+            mentor_id=data['mentor_id'],
+            schedule_id=data.get('schedule_id'),
+            notification_type=data['notification_type'],
+            title=data['title'],
+            message=data['message'],
+            meeting_datetime=datetime.fromisoformat(data['meeting_datetime']) if data.get('meeting_datetime') else None,
+            meeting_link=data.get('meeting_link'),
+            notification_data=data.get('notification_data')
+        )
+        
+        session.add(notification)
+        session.commit()
+        
+        # Send real-time notification
+        notification_data = {
+            "id": notification.id,
+            "mentor_id": notification.mentor_id,
+            "schedule_id": notification.schedule_id,
+            "notification_type": notification.notification_type,
+            "title": notification.title,
+            "message": notification.message,
+            "meeting_datetime": notification.meeting_datetime.isoformat() if notification.meeting_datetime else None,
+            "meeting_link": notification.meeting_link,
+            "is_read": False,
+            "created_at": notification.created_at.isoformat(),
+            "notification_data": notification.notification_data
+        }
+        
+        # Send to user room
+        socketio.emit('new_meeting_notification', notification_data, room=f"meeting_user_{notification.user_id}", namespace='/')
+        
+        return jsonify({
+            'message': 'Notification created successfully',
+            'notification_id': notification.id
+        }), 201
+        
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications/reminder', methods=['POST'])
+@jwt_required()
+def send_meeting_reminder():
+    """Send meeting reminder notifications"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        data = request.get_json()
+        schedule_id = data.get('schedule_id')
+        
+        if not schedule_id:
+            return jsonify({'error': 'schedule_id is required'}), 400
+        
+        # Get schedule details
+        schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+        if not schedule:
+            return jsonify({'error': 'Schedule not found'}), 404
+        
+        # Send reminder to user
+        user_reminder_id = send_meeting_notification(
+            user_id=schedule.user_id,
+            mentor_id=schedule.mentor_id,
+            notification_type='meeting_reminder',
+            title='Meeting Reminder',
+            message=f'Reminder: Your meeting with {schedule.mentor_name} is scheduled for {schedule.start_datetime.strftime("%Y-%m-%d at %H:%M")}',
+            schedule_id=schedule.id,
+            meeting_datetime=schedule.start_datetime,
+            meeting_link=schedule.link,
+            notification_data={'mentor_name': schedule.mentor_name, 'duration': schedule.duration}
+        )
+        
+        # Send reminder to mentor
+        mentor_reminder_id = send_meeting_notification(
+            user_id=schedule.mentor_id,
+            mentor_id=schedule.mentor_id,
+            notification_type='meeting_reminder',
+            title='Meeting Reminder',
+            message=f'Reminder: Your meeting with {schedule.name} is scheduled for {schedule.start_datetime.strftime("%Y-%m-%d at %H:%M")}',
+            schedule_id=schedule.id,
+            meeting_datetime=schedule.start_datetime,
+            meeting_link=schedule.link,
+            notification_data={'user_name': schedule.name, 'duration': schedule.duration}
+        )
+        
+        return jsonify({
+            'message': 'Meeting reminders sent successfully',
+            'user_reminder_id': user_reminder_id,
+            'mentor_reminder_id': mentor_reminder_id
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications/cancel', methods=['POST'])
+@jwt_required()
+def send_meeting_cancellation():
+    """Send meeting cancellation notifications"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        data = request.get_json()
+        schedule_id = data.get('schedule_id')
+        cancellation_reason = data.get('reason', 'No reason provided')
+        
+        if not schedule_id:
+            return jsonify({'error': 'schedule_id is required'}), 400
+        
+        # Get schedule details
+        schedule = session.query(Schedule).filter_by(id=schedule_id).first()
+        if not schedule:
+            return jsonify({'error': 'Schedule not found'}), 404
+        
+        # Send cancellation to user
+        user_cancellation_id = send_meeting_notification(
+            user_id=schedule.user_id,
+            mentor_id=schedule.mentor_id,
+            notification_type='meeting_cancelled',
+            title='Meeting Cancelled',
+            message=f'Your meeting with {schedule.mentor_name} scheduled for {schedule.start_datetime.strftime("%Y-%m-%d at %H:%M")} has been cancelled. Reason: {cancellation_reason}',
+            schedule_id=schedule.id,
+            meeting_datetime=schedule.start_datetime,
+            meeting_link=schedule.link,
+            notification_data={'mentor_name': schedule.mentor_name, 'cancellation_reason': cancellation_reason}
+        )
+        
+        # Send cancellation to mentor
+        mentor_cancellation_id = send_meeting_notification(
+            user_id=schedule.mentor_id,
+            mentor_id=schedule.mentor_id,
+            notification_type='meeting_cancelled',
+            title='Meeting Cancelled',
+            message=f'Your meeting with {schedule.name} scheduled for {schedule.start_datetime.strftime("%Y-%m-%d at %H:%M")} has been cancelled. Reason: {cancellation_reason}',
+            schedule_id=schedule.id,
+            meeting_datetime=schedule.start_datetime,
+            meeting_link=schedule.link,
+            notification_data={'user_name': schedule.name, 'cancellation_reason': cancellation_reason}
+        )
+        
+        return jsonify({
+            'message': 'Meeting cancellation notifications sent successfully',
+            'user_cancellation_id': user_cancellation_id,
+            'mentor_cancellation_id': mentor_cancellation_id
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/meeting-notifications/upcoming', methods=['GET'])
+@jwt_required()
+def get_upcoming_meetings():
+    """Get upcoming meetings for the current user"""
+    current_user = get_jwt_identity()
+    session = Session()
+    
+    try:
+        # Get user from JWT identity
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Get upcoming meetings (next 7 days)
+        from datetime import timedelta
+        now = datetime.utcnow()
+        week_from_now = now + timedelta(days=7)
+        
+        upcoming_meetings = session.query(Schedule).filter(
+            or_(Schedule.user_id == user.id, Schedule.mentor_id == user.id),
+            Schedule.start_datetime > now,
+            Schedule.start_datetime <= week_from_now
+        ).order_by(Schedule.start_datetime).all()
+        
+        meetings_list = [
+            {
+                "id": meeting.id,
+                "name": meeting.name,
+                "email": meeting.email,
+                "start_datetime": meeting.start_datetime.isoformat(),
+                "end_datetime": meeting.end_datetime.isoformat(),
+                "link": meeting.link,
+                "mentor_id": meeting.mentor_id,
+                "mentor_name": meeting.mentor_name,
+                "mentor_email": meeting.mentor_email,
+                "user_id": meeting.user_id,
+                "duration": meeting.duration,
+                "timezone": meeting.timezone
+            }
+            for meeting in upcoming_meetings
+        ]
+        
+        return jsonify({"upcoming_meetings": meetings_list}), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
 
         
 @app.route('/assigned_users', methods=['GET'])
@@ -3802,6 +4256,132 @@ def handle_get_messages(data):
         emit('message_history', {"messages": message_list})
     except Exception as e:
         emit('message_error', {"error": str(e)})
+    finally:
+        session.close()
+
+# Meeting Notification Socket Events
+@socketio.on('join_meeting_room')
+def handle_join_meeting_room(data):
+    """Join a user to their meeting notification room"""
+    user_id = data.get('user_id')
+    user_type = data.get('user_type', 'user')  # 'user' or 'mentor'
+    
+    if not user_id:
+        emit('meeting_notification_error', {"error": "user_id is required"})
+        return
+    
+    room_name = f"meeting_{user_type}_{user_id}"
+    join_room(room_name)
+    emit('joined_meeting_room', {"room": room_name, "user_id": user_id, "user_type": user_type})
+
+@socketio.on('get_meeting_notifications')
+def handle_get_meeting_notifications(data):
+    """Get all meeting notifications for a user"""
+    user_id = data.get('user_id')
+    
+    if not user_id:
+        emit('meeting_notification_error', {"error": "user_id is required"})
+        return
+    
+    session = Session()
+    try:
+        notifications = session.query(MeetingNotification).filter_by(user_id=user_id).order_by(MeetingNotification.created_at.desc()).all()
+        
+        notification_list = [
+            {
+                "id": notif.id,
+                "mentor_id": notif.mentor_id,
+                "schedule_id": notif.schedule_id,
+                "notification_type": notif.notification_type,
+                "title": notif.title,
+                "message": notif.message,
+                "meeting_datetime": notif.meeting_datetime.isoformat() if notif.meeting_datetime else None,
+                "meeting_link": notif.meeting_link,
+                "is_read": notif.is_read,
+                "created_at": notif.created_at.isoformat(),
+                "read_at": notif.read_at.isoformat() if notif.read_at else None,
+                "notification_data": notif.notification_data
+            }
+            for notif in notifications
+        ]
+        
+        emit('meeting_notifications', {"notifications": notification_list})
+    except Exception as e:
+        emit('meeting_notification_error', {"error": str(e)})
+    finally:
+        session.close()
+
+@socketio.on('mark_notification_read')
+def handle_mark_notification_read(data):
+    """Mark a meeting notification as read"""
+    notification_id = data.get('notification_id')
+    user_id = data.get('user_id')
+    
+    if not notification_id or not user_id:
+        emit('meeting_notification_error', {"error": "notification_id and user_id are required"})
+        return
+    
+    session = Session()
+    try:
+        notification = session.query(MeetingNotification).filter_by(id=notification_id, user_id=user_id).first()
+        
+        if not notification:
+            emit('meeting_notification_error', {"error": "Notification not found"})
+            return
+        
+        notification.is_read = True
+        notification.read_at = datetime.utcnow()
+        session.commit()
+        
+        emit('notification_marked_read', {"notification_id": notification_id, "success": True})
+    except Exception as e:
+        session.rollback()
+        emit('meeting_notification_error', {"error": str(e)})
+    finally:
+        session.close()
+
+def send_meeting_notification(user_id, mentor_id, notification_type, title, message, schedule_id=None, meeting_datetime=None, meeting_link=None, notification_data=None):
+    """Helper function to create and send meeting notifications"""
+    session = Session()
+    try:
+        # Create notification record
+        notification = MeetingNotification(
+            user_id=user_id,
+            mentor_id=mentor_id,
+            schedule_id=schedule_id,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            meeting_datetime=meeting_datetime,
+            meeting_link=meeting_link,
+            notification_data=notification_data
+        )
+        session.add(notification)
+        session.commit()
+        
+        # Send real-time notification via Socket.IO
+        notification_data = {
+            "id": notification.id,
+            "mentor_id": mentor_id,
+            "schedule_id": schedule_id,
+            "notification_type": notification_type,
+            "title": title,
+            "message": message,
+            "meeting_datetime": meeting_datetime.isoformat() if meeting_datetime else None,
+            "meeting_link": meeting_link,
+            "is_read": False,
+            "created_at": notification.created_at.isoformat(),
+            "notification_data": notification_data
+        }
+        
+        # Send to user room
+        socketio.emit('new_meeting_notification', notification_data, room=f"meeting_user_{user_id}", namespace='/')
+        
+        return notification.id
+    except Exception as e:
+        session.rollback()
+        print(f"Error sending meeting notification: {str(e)}")
+        return None
     finally:
         session.close()
 
