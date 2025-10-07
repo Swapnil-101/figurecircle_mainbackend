@@ -151,6 +151,20 @@ class ContactUs(Base):
     phone_number = Column(String(20), nullable=True)
     description = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+# Categories table for Education, Industry, Experience Level, Role, Skills
+class Category(Base):
+    __tablename__ = 'categories'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    category_type = Column(String(50), nullable=False)  # 'education', 'industry', 'experience_level', 'role', 'skills'
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('category_type', 'name', name='_category_type_name_uc'),)
     
 class Information(Base):
     __tablename__ = 'information'
@@ -4385,8 +4399,7 @@ def send_meeting_notification(user_id, mentor_id, notification_type, title, mess
     finally:
         session.close()
 
-if __name__ == '__main__':
-    socketio.run(app, debug=True)
+
 
 # Delete All Users Endpoint
 @app.route('/delete_users', methods=['DELETE'])
@@ -4417,12 +4430,1018 @@ def delete_mentors():
 
 
 
+# ===========================================
+# CATEGORY MANAGEMENT APIs
+# ===========================================
+
+# Helper function to validate category type
+def validate_category_type(category_type):
+    valid_types = ['education', 'industry', 'experience_level', 'role', 'skills']
+    return category_type in valid_types
+
+# ===========================================
+# EDUCATION APIs
+# ===========================================
+
+@app.route('/api/education', methods=['GET'])
+def get_education_list():
+    """Get all education categories"""
+    session = Session()
+    try:
+        education_list = session.query(Category).filter_by(
+            category_type='education', 
+            is_active=True
+        ).order_by(Category.name).all()
+        
+        result = [
+            {
+                'id': edu.id,
+                'name': edu.name,
+                'description': edu.description,
+                'created_at': edu.created_at.isoformat() if edu.created_at else None,
+                'updated_at': edu.updated_at.isoformat() if edu.updated_at else None
+            }
+            for edu in education_list
+        ]
+        
+        return jsonify({'education': result}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/education', methods=['POST'])
+@jwt_required()
+def create_education():
+    """Create a new education category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        
+        if not data or 'name' not in data:
+            return jsonify({'error': 'Name is required'}), 400
+        
+        # Check if education with same name already exists
+        existing = session.query(Category).filter_by(
+            category_type='education',
+            name=data['name']
+        ).first()
+        
+        if existing:
+            return jsonify({'error': 'Education with this name already exists'}), 400
+        
+        new_education = Category(
+            category_type='education',
+            name=data['name'],
+            description=data.get('description'),
+            is_active=data.get('is_active', True)
+        )
+        
+        session.add(new_education)
+        session.commit()
+        
+        return jsonify({
+            'message': 'Education created successfully',
+            'education': {
+                'id': new_education.id,
+                'name': new_education.name,
+                'description': new_education.description,
+                'created_at': new_education.created_at.isoformat()
+            }
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/education/<int:education_id>', methods=['GET'])
+def get_education(education_id):
+    """Get a specific education category"""
+    session = Session()
+    try:
+        education = session.query(Category).filter_by(
+            id=education_id,
+            category_type='education'
+        ).first()
+        
+        if not education:
+            return jsonify({'error': 'Education not found'}), 404
+        
+        return jsonify({
+            'id': education.id,
+            'name': education.name,
+            'description': education.description,
+            'is_active': education.is_active,
+            'created_at': education.created_at.isoformat() if education.created_at else None,
+            'updated_at': education.updated_at.isoformat() if education.updated_at else None
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/education/<int:education_id>', methods=['PUT'])
+@jwt_required()
+def update_education(education_id):
+    """Update an education category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        education = session.query(Category).filter_by(
+            id=education_id,
+            category_type='education'
+        ).first()
+        
+        if not education:
+            return jsonify({'error': 'Education not found'}), 404
+        
+        # Check if name is being updated and if it conflicts with existing
+        if 'name' in data and data['name'] != education.name:
+            existing = session.query(Category).filter_by(
+                category_type='education',
+                name=data['name']
+            ).first()
+            
+            if existing:
+                return jsonify({'error': 'Education with this name already exists'}), 400
+        
+        # Update fields
+        if 'name' in data:
+            education.name = data['name']
+        if 'description' in data:
+            education.description = data['description']
+        if 'is_active' in data:
+            education.is_active = data['is_active']
+        
+        education.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({
+            'message': 'Education updated successfully',
+            'education': {
+                'id': education.id,
+                'name': education.name,
+                'description': education.description,
+                'is_active': education.is_active,
+                'updated_at': education.updated_at.isoformat()
+            }
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/education/<int:education_id>', methods=['DELETE'])
+@jwt_required()
+def delete_education(education_id):
+    """Delete an education category (soft delete)"""
+    session = Session()
+    try:
+        education = session.query(Category).filter_by(
+            id=education_id,
+            category_type='education'
+        ).first()
+        
+        if not education:
+            return jsonify({'error': 'Education not found'}), 404
+        
+        education.is_active = False
+        education.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({'message': 'Education deleted successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+# ===========================================
+# INDUSTRY APIs
+# ===========================================
+
+@app.route('/api/industry', methods=['GET'])
+def get_industry_list():
+    """Get all industry categories"""
+    session = Session()
+    try:
+        industry_list = session.query(Category).filter_by(
+            category_type='industry', 
+            is_active=True
+        ).order_by(Category.name).all()
+        
+        result = [
+            {
+                'id': ind.id,
+                'name': ind.name,
+                'description': ind.description,
+                'created_at': ind.created_at.isoformat() if ind.created_at else None,
+                'updated_at': ind.updated_at.isoformat() if ind.updated_at else None
+            }
+            for ind in industry_list
+        ]
+        
+        return jsonify({'industry': result}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/industry', methods=['POST'])
+@jwt_required()
+def create_industry():
+    """Create a new industry category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        
+        if not data or 'name' not in data:
+            return jsonify({'error': 'Name is required'}), 400
+        
+        # Check if industry with same name already exists
+        existing = session.query(Category).filter_by(
+            category_type='industry',
+            name=data['name']
+        ).first()
+        
+        if existing:
+            return jsonify({'error': 'Industry with this name already exists'}), 400
+        
+        new_industry = Category(
+            category_type='industry',
+            name=data['name'],
+            description=data.get('description'),
+            is_active=data.get('is_active', True)
+        )
+        
+        session.add(new_industry)
+        session.commit()
+        
+        return jsonify({
+            'message': 'Industry created successfully',
+            'industry': {
+                'id': new_industry.id,
+                'name': new_industry.name,
+                'description': new_industry.description,
+                'created_at': new_industry.created_at.isoformat()
+            }
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/industry/<int:industry_id>', methods=['GET'])
+def get_industry(industry_id):
+    """Get a specific industry category"""
+    session = Session()
+    try:
+        industry = session.query(Category).filter_by(
+            id=industry_id,
+            category_type='industry'
+        ).first()
+        
+        if not industry:
+            return jsonify({'error': 'Industry not found'}), 404
+        
+        return jsonify({
+            'id': industry.id,
+            'name': industry.name,
+            'description': industry.description,
+            'is_active': industry.is_active,
+            'created_at': industry.created_at.isoformat() if industry.created_at else None,
+            'updated_at': industry.updated_at.isoformat() if industry.updated_at else None
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/industry/<int:industry_id>', methods=['PUT'])
+@jwt_required()
+def update_industry(industry_id):
+    """Update an industry category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        industry = session.query(Category).filter_by(
+            id=industry_id,
+            category_type='industry'
+        ).first()
+        
+        if not industry:
+            return jsonify({'error': 'Industry not found'}), 404
+        
+        # Check if name is being updated and if it conflicts with existing
+        if 'name' in data and data['name'] != industry.name:
+            existing = session.query(Category).filter_by(
+                category_type='industry',
+                name=data['name']
+            ).first()
+            
+            if existing:
+                return jsonify({'error': 'Industry with this name already exists'}), 400
+        
+        # Update fields
+        if 'name' in data:
+            industry.name = data['name']
+        if 'description' in data:
+            industry.description = data['description']
+        if 'is_active' in data:
+            industry.is_active = data['is_active']
+        
+        industry.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({
+            'message': 'Industry updated successfully',
+            'industry': {
+                'id': industry.id,
+                'name': industry.name,
+                'description': industry.description,
+                'is_active': industry.is_active,
+                'updated_at': industry.updated_at.isoformat()
+            }
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/industry/<int:industry_id>', methods=['DELETE'])
+@jwt_required()
+def delete_industry(industry_id):
+    """Delete an industry category (soft delete)"""
+    session = Session()
+    try:
+        industry = session.query(Category).filter_by(
+            id=industry_id,
+            category_type='industry'
+        ).first()
+        
+        if not industry:
+            return jsonify({'error': 'Industry not found'}), 404
+        
+        industry.is_active = False
+        industry.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({'message': 'Industry deleted successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+# ===========================================
+# EXPERIENCE LEVEL APIs
+# ===========================================
+
+@app.route('/api/experience-level', methods=['GET'])
+def get_experience_level_list():
+    """Get all experience level categories"""
+    session = Session()
+    try:
+        experience_list = session.query(Category).filter_by(
+            category_type='experience_level', 
+            is_active=True
+        ).order_by(Category.name).all()
+        
+        result = [
+            {
+                'id': exp.id,
+                'name': exp.name,
+                'description': exp.description,
+                'created_at': exp.created_at.isoformat() if exp.created_at else None,
+                'updated_at': exp.updated_at.isoformat() if exp.updated_at else None
+            }
+            for exp in experience_list
+        ]
+        
+        return jsonify({'experience_level': result}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/experience-level', methods=['POST'])
+@jwt_required()
+def create_experience_level():
+    """Create a new experience level category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        
+        if not data or 'name' not in data:
+            return jsonify({'error': 'Name is required'}), 400
+        
+        # Check if experience level with same name already exists
+        existing = session.query(Category).filter_by(
+            category_type='experience_level',
+            name=data['name']
+        ).first()
+        
+        if existing:
+            return jsonify({'error': 'Experience level with this name already exists'}), 400
+        
+        new_experience = Category(
+            category_type='experience_level',
+            name=data['name'],
+            description=data.get('description'),
+            is_active=data.get('is_active', True)
+        )
+        
+        session.add(new_experience)
+        session.commit()
+        
+        return jsonify({
+            'message': 'Experience level created successfully',
+            'experience_level': {
+                'id': new_experience.id,
+                'name': new_experience.name,
+                'description': new_experience.description,
+                'created_at': new_experience.created_at.isoformat()
+            }
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/experience-level/<int:experience_id>', methods=['GET'])
+def get_experience_level(experience_id):
+    """Get a specific experience level category"""
+    session = Session()
+    try:
+        experience = session.query(Category).filter_by(
+            id=experience_id,
+            category_type='experience_level'
+        ).first()
+        
+        if not experience:
+            return jsonify({'error': 'Experience level not found'}), 404
+        
+        return jsonify({
+            'id': experience.id,
+            'name': experience.name,
+            'description': experience.description,
+            'is_active': experience.is_active,
+            'created_at': experience.created_at.isoformat() if experience.created_at else None,
+            'updated_at': experience.updated_at.isoformat() if experience.updated_at else None
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/experience-level/<int:experience_id>', methods=['PUT'])
+@jwt_required()
+def update_experience_level(experience_id):
+    """Update an experience level category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        experience = session.query(Category).filter_by(
+            id=experience_id,
+            category_type='experience_level'
+        ).first()
+        
+        if not experience:
+            return jsonify({'error': 'Experience level not found'}), 404
+        
+        # Check if name is being updated and if it conflicts with existing
+        if 'name' in data and data['name'] != experience.name:
+            existing = session.query(Category).filter_by(
+                category_type='experience_level',
+                name=data['name']
+            ).first()
+            
+            if existing:
+                return jsonify({'error': 'Experience level with this name already exists'}), 400
+        
+        # Update fields
+        if 'name' in data:
+            experience.name = data['name']
+        if 'description' in data:
+            experience.description = data['description']
+        if 'is_active' in data:
+            experience.is_active = data['is_active']
+        
+        experience.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({
+            'message': 'Experience level updated successfully',
+            'experience_level': {
+                'id': experience.id,
+                'name': experience.name,
+                'description': experience.description,
+                'is_active': experience.is_active,
+                'updated_at': experience.updated_at.isoformat()
+            }
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/experience-level/<int:experience_id>', methods=['DELETE'])
+@jwt_required()
+def delete_experience_level(experience_id):
+    """Delete an experience level category (soft delete)"""
+    session = Session()
+    try:
+        experience = session.query(Category).filter_by(
+            id=experience_id,
+            category_type='experience_level'
+        ).first()
+        
+        if not experience:
+            return jsonify({'error': 'Experience level not found'}), 404
+        
+        experience.is_active = False
+        experience.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({'message': 'Experience level deleted successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+# ===========================================
+# ROLE APIs
+# ===========================================
+
+@app.route('/api/role', methods=['GET'])
+def get_role_list():
+    """Get all role categories"""
+    session = Session()
+    try:
+        role_list = session.query(Category).filter_by(
+            category_type='role', 
+            is_active=True
+        ).order_by(Category.name).all()
+        
+        result = [
+            {
+                'id': role.id,
+                'name': role.name,
+                'description': role.description,
+                'created_at': role.created_at.isoformat() if role.created_at else None,
+                'updated_at': role.updated_at.isoformat() if role.updated_at else None
+            }
+            for role in role_list
+        ]
+        
+        return jsonify({'role': result}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/role', methods=['POST'])
+@jwt_required()
+def create_role():
+    """Create a new role category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        
+        if not data or 'name' not in data:
+            return jsonify({'error': 'Name is required'}), 400
+        
+        # Check if role with same name already exists
+        existing = session.query(Category).filter_by(
+            category_type='role',
+            name=data['name']
+        ).first()
+        
+        if existing:
+            return jsonify({'error': 'Role with this name already exists'}), 400
+        
+        new_role = Category(
+            category_type='role',
+            name=data['name'],
+            description=data.get('description'),
+            is_active=data.get('is_active', True)
+        )
+        
+        session.add(new_role)
+        session.commit()
+        
+        return jsonify({
+            'message': 'Role created successfully',
+            'role': {
+                'id': new_role.id,
+                'name': new_role.name,
+                'description': new_role.description,
+                'created_at': new_role.created_at.isoformat()
+            }
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/role/<int:role_id>', methods=['GET'])
+def get_role(role_id):
+    """Get a specific role category"""
+    session = Session()
+    try:
+        role = session.query(Category).filter_by(
+            id=role_id,
+            category_type='role'
+        ).first()
+        
+        if not role:
+            return jsonify({'error': 'Role not found'}), 404
+        
+        return jsonify({
+            'id': role.id,
+            'name': role.name,
+            'description': role.description,
+            'is_active': role.is_active,
+            'created_at': role.created_at.isoformat() if role.created_at else None,
+            'updated_at': role.updated_at.isoformat() if role.updated_at else None
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/role/<int:role_id>', methods=['PUT'])
+@jwt_required()
+def update_role(role_id):
+    """Update a role category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        role = session.query(Category).filter_by(
+            id=role_id,
+            category_type='role'
+        ).first()
+        
+        if not role:
+            return jsonify({'error': 'Role not found'}), 404
+        
+        # Check if name is being updated and if it conflicts with existing
+        if 'name' in data and data['name'] != role.name:
+            existing = session.query(Category).filter_by(
+                category_type='role',
+                name=data['name']
+            ).first()
+            
+            if existing:
+                return jsonify({'error': 'Role with this name already exists'}), 400
+        
+        # Update fields
+        if 'name' in data:
+            role.name = data['name']
+        if 'description' in data:
+            role.description = data['description']
+        if 'is_active' in data:
+            role.is_active = data['is_active']
+        
+        role.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({
+            'message': 'Role updated successfully',
+            'role': {
+                'id': role.id,
+                'name': role.name,
+                'description': role.description,
+                'is_active': role.is_active,
+                'updated_at': role.updated_at.isoformat()
+            }
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/role/<int:role_id>', methods=['DELETE'])
+@jwt_required()
+def delete_role(role_id):
+    """Delete a role category (soft delete)"""
+    session = Session()
+    try:
+        role = session.query(Category).filter_by(
+            id=role_id,
+            category_type='role'
+        ).first()
+        
+        if not role:
+            return jsonify({'error': 'Role not found'}), 404
+        
+        role.is_active = False
+        role.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({'message': 'Role deleted successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+# ===========================================
+# SKILLS APIs
+# ===========================================
+
+@app.route('/api/skills', methods=['GET'])
+def get_skills_list():
+    """Get all skills categories"""
+    session = Session()
+    try:
+        skills_list = session.query(Category).filter_by(
+            category_type='skills', 
+            is_active=True
+        ).order_by(Category.name).all()
+        
+        result = [
+            {
+                'id': skill.id,
+                'name': skill.name,
+                'description': skill.description,
+                'created_at': skill.created_at.isoformat() if skill.created_at else None,
+                'updated_at': skill.updated_at.isoformat() if skill.updated_at else None
+            }
+            for skill in skills_list
+        ]
+        
+        return jsonify({'skills': result}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/skills', methods=['POST'])
+@jwt_required()
+def create_skill():
+    """Create a new skill category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        
+        if not data or 'name' not in data:
+            return jsonify({'error': 'Name is required'}), 400
+        
+        # Check if skill with same name already exists
+        existing = session.query(Category).filter_by(
+            category_type='skills',
+            name=data['name']
+        ).first()
+        
+        if existing:
+            return jsonify({'error': 'Skill with this name already exists'}), 400
+        
+        new_skill = Category(
+            category_type='skills',
+            name=data['name'],
+            description=data.get('description'),
+            is_active=data.get('is_active', True)
+        )
+        
+        session.add(new_skill)
+        session.commit()
+        
+        return jsonify({
+            'message': 'Skill created successfully',
+            'skill': {
+                'id': new_skill.id,
+                'name': new_skill.name,
+                'description': new_skill.description,
+                'created_at': new_skill.created_at.isoformat()
+            }
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/skills/<int:skill_id>', methods=['GET'])
+def get_skill(skill_id):
+    """Get a specific skill category"""
+    session = Session()
+    try:
+        skill = session.query(Category).filter_by(
+            id=skill_id,
+            category_type='skills'
+        ).first()
+        
+        if not skill:
+            return jsonify({'error': 'Skill not found'}), 404
+        
+        return jsonify({
+            'id': skill.id,
+            'name': skill.name,
+            'description': skill.description,
+            'is_active': skill.is_active,
+            'created_at': skill.created_at.isoformat() if skill.created_at else None,
+            'updated_at': skill.updated_at.isoformat() if skill.updated_at else None
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/skills/<int:skill_id>', methods=['PUT'])
+@jwt_required()
+def update_skill(skill_id):
+    """Update a skill category"""
+    session = Session()
+    try:
+        data = request.get_json()
+        skill = session.query(Category).filter_by(
+            id=skill_id,
+            category_type='skills'
+        ).first()
+        
+        if not skill:
+            return jsonify({'error': 'Skill not found'}), 404
+        
+        # Check if name is being updated and if it conflicts with existing
+        if 'name' in data and data['name'] != skill.name:
+            existing = session.query(Category).filter_by(
+                category_type='skills',
+                name=data['name']
+            ).first()
+            
+            if existing:
+                return jsonify({'error': 'Skill with this name already exists'}), 400
+        
+        # Update fields
+        if 'name' in data:
+            skill.name = data['name']
+        if 'description' in data:
+            skill.description = data['description']
+        if 'is_active' in data:
+            skill.is_active = data['is_active']
+        
+        skill.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({
+            'message': 'Skill updated successfully',
+            'skill': {
+                'id': skill.id,
+                'name': skill.name,
+                'description': skill.description,
+                'is_active': skill.is_active,
+                'updated_at': skill.updated_at.isoformat()
+            }
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/skills/<int:skill_id>', methods=['DELETE'])
+@jwt_required()
+def delete_skill(skill_id):
+    """Delete a skill category (soft delete)"""
+    session = Session()
+    try:
+        skill = session.query(Category).filter_by(
+            id=skill_id,
+            category_type='skills'
+        ).first()
+        
+        if not skill:
+            return jsonify({'error': 'Skill not found'}), 404
+        
+        skill.is_active = False
+        skill.updated_at = datetime.utcnow()
+        session.commit()
+        
+        return jsonify({'message': 'Skill deleted successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+# ===========================================
+# BULK OPERATIONS
+# ===========================================
+
+@app.route('/api/categories/bulk', methods=['POST'])
+@jwt_required()
+def bulk_create_categories():
+    """Bulk create categories"""
+    session = Session()
+    try:
+        data = request.get_json()
+        
+        if not data or 'categories' not in data:
+            return jsonify({'error': 'Categories array is required'}), 400
+        
+        created_categories = []
+        errors = []
+        
+        for category_data in data['categories']:
+            try:
+                if not validate_category_type(category_data.get('category_type')):
+                    errors.append(f"Invalid category_type: {category_data.get('category_type')}")
+                    continue
+                
+                # Check if category already exists
+                existing = session.query(Category).filter_by(
+                    category_type=category_data['category_type'],
+                    name=category_data['name']
+                ).first()
+                
+                if existing:
+                    errors.append(f"Category {category_data['name']} already exists")
+                    continue
+                
+                new_category = Category(
+                    category_type=category_data['category_type'],
+                    name=category_data['name'],
+                    description=category_data.get('description'),
+                    is_active=category_data.get('is_active', True)
+                )
+                
+                session.add(new_category)
+                created_categories.append({
+                    'category_type': new_category.category_type,
+                    'name': new_category.name,
+                    'description': new_category.description
+                })
+                
+            except Exception as e:
+                errors.append(f"Error creating {category_data.get('name', 'unknown')}: {str(e)}")
+        
+        session.commit()
+        
+        return jsonify({
+            'message': f'Created {len(created_categories)} categories',
+            'created': created_categories,
+            'errors': errors
+        }), 201
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+@app.route('/api/categories/search', methods=['GET'])
+def search_categories():
+    """Search categories by name across all types"""
+    session = Session()
+    try:
+        query = request.args.get('q', '').strip()
+        category_type = request.args.get('type', '').strip()
+        
+        if not query:
+            return jsonify({'error': 'Search query is required'}), 400
+        
+        # Build query
+        db_query = session.query(Category).filter(
+            Category.name.ilike(f'%{query}%'),
+            Category.is_active == True
+        )
+        
+        if category_type and validate_category_type(category_type):
+            db_query = db_query.filter(Category.category_type == category_type)
+        
+        results = db_query.order_by(Category.name).all()
+        
+        categories = [
+            {
+                'id': cat.id,
+                'category_type': cat.category_type,
+                'name': cat.name,
+                'description': cat.description,
+                'created_at': cat.created_at.isoformat() if cat.created_at else None
+            }
+            for cat in results
+        ]
+        
+        return jsonify({
+            'query': query,
+            'category_type': category_type,
+            'results': categories,
+            'count': len(categories)
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
 if __name__ == '__main__':
-    app.run(debug=True)
-
-                    
-
-
-
-                    
+    socketio.run(app, debug=True)
 
