@@ -723,6 +723,9 @@ def get_mentor_details():
             "email": mentor.email,
             "phone": mentor.phone,
             "linkedin": mentor.linkedin,
+            "work_experience": mentor.work_experience,
+            "current_role": mentor.current_role,
+            "interested_field": mentor.interested_field,
             "expertise": mentor.expertise,
             "degree": mentor.degree,
             "background": mentor.background,
@@ -730,6 +733,8 @@ def get_mentor_details():
             "milestones": mentor.milestones,
             "profile_picture": mentor.profile_picture,
             "resume": mentor.resume,
+            "availability": mentor.availability,
+            "intent_price": mentor.intent_price,
             "created_at": mentor.created_at.isoformat() if mentor.created_at else None
         }), 200
     except Exception as e:
