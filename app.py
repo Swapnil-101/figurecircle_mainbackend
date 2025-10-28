@@ -319,7 +319,10 @@ class Notification(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'))  # The user ID for both users and mentors
+    sender_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Sender ID for chat messages
+    mentor_id = Column(Integer, ForeignKey('mentors.id'), nullable=True)  # Optional mentor_id for mentor-related notifications
     message = Column(String)
+    message_type = Column(String, default='notification')  # 'notification' or 'chat'
     timestamp = Column(DateTime, default=datetime.utcnow)
     is_read = Column(Boolean, default=False)
     
@@ -2252,29 +2255,406 @@ def assign_mentor():
     notification_message_mentor = f"You have been assigned to a new user: {user.username}."
 
     # Save notifications for both user and mentor in the database using user_id
-    notification_for_user = Notification(user_id=user_id, message=notification_message_user)
-    notification_for_mentor = Notification(user_id=mentor.user_id, message=notification_message_mentor)  # Assuming mentor has a user_id attribute
+    notification_for_user = Notification(
+        user_id=user_id, 
+        mentor_id=mentor_id,
+        message=notification_message_user,
+        message_type='notification'
+    )
+    notification_for_mentor = Notification(
+        user_id=mentor.user_id, 
+        mentor_id=mentor_id,
+        message=notification_message_mentor,
+        message_type='notification'
+    )
     session.add(notification_for_user)
     session.add(notification_for_mentor)
     session.commit()
 
-    if user_id:
-        notifications = session.query(Notification).filter_by(user_id=user_id).all()
-        notification_messages = [{
-            "message": notification.message,
-            "timestamp": notification.timestamp.isoformat(), 
-            "is_read": notification.is_read
-        } for notification in notifications]
-
-        emit('notifications', notification_messages, room=f"user_{user_id}", namespace='/')
-    # Emit real-time notification to the user and mentor via Socket.IO
-    emit('notification', {'message': notification_message_user, 'mentor_id': mentor_id, 'user_id': user_id},
-         room=f"user_{user_id}", namespace='/')
-    emit('notification', {'message': notification_message_mentor, 'mentor_id': mentor_id, 'user_id': user_id},
-         room=f"mentor_{mentor.user_id}", namespace='/')
+    # Debug logging
+    print(f"[assign_mentor] Emitting notification to user_{user_id} and user_{mentor.user_id}")
+    
+    # Emit real-time notification to the user via Socket.IO
+    socketio.emit('notification', {
+        'message': notification_message_user, 
+        'mentor_id': mentor_id, 
+        'user_id': user_id
+    }, room=f"user_{user_id}", namespace='/')
+    
+    # Emit real-time notification to the mentor via Socket.IO
+    socketio.emit('notification', {
+        'message': notification_message_mentor, 
+        'mentor_id': mentor_id, 
+        'user_id': user_id
+    }, room=f"user_{mentor.user_id}", namespace='/')
 
     session.close()
     return jsonify({"message": "Mentor assigned successfully."}), 200
+
+
+@app.route('/get_notifications/<int:user_id>', methods=['GET'])
+def get_notifications(user_id):
+    session = Session()
+    
+    try:
+        # Get user by ID
+        user = session.query(User).filter_by(id=user_id).first()
+        
+        if not user:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+        
+        # Get all notifications for the current user using user.id
+        notifications = session.query(Notification).filter_by(user_id=user.id).order_by(Notification.timestamp.desc()).all()
+        
+        notification_list = []
+        for notification in notifications:
+            notification_data = {
+                "id": notification.id,
+                "message": notification.message,
+                "timestamp": notification.timestamp.isoformat(),
+                "is_read": notification.is_read,
+                "message_type": notification.message_type,
+                "mentor_id": notification.mentor_id
+            }
+            notification_list.append(notification_data)
+        
+        session.close()
+        return jsonify({
+            "success": True,
+            "notifications": notification_list,
+            "total_count": len(notification_list)
+        }), 200
+        
+    except Exception as e:
+        session.close()
+        return jsonify({
+            "success": False,
+            "message": f"Error fetching notifications: {str(e)}"
+        }), 500
+
+
+@app.route('/user_notification_read/<int:user_id>/<int:notification_id>', methods=['PUT'])
+def user_notification_read(user_id, notification_id):
+    session = Session()
+    
+    try:
+        # Get user by ID
+        user = session.query(User).filter_by(id=user_id).first()
+        
+        if not user:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+        
+        notification = session.query(Notification).filter_by(
+            id=notification_id, 
+            user_id=user.id
+        ).first()
+        
+        if not notification:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "Notification not found"
+            }), 404
+        
+        notification.is_read = True
+        session.commit()
+        session.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Notification marked as read"
+        }), 200
+        
+    except Exception as e:
+        session.close()
+        return jsonify({
+            "success": False,
+            "message": f"Error updating notification: {str(e)}"
+        }), 500
+
+
+@app.route('/user_notifications_mark_all_read/<int:user_id>', methods=['PUT'])
+def user_notifications_mark_all_read(user_id):
+    session = Session()
+    
+    try:
+        # Get user by ID
+        user = session.query(User).filter_by(id=user_id).first()
+        
+        if not user:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+        
+        notifications = session.query(Notification).filter_by(
+            user_id=user.id,
+            is_read=False
+        ).all()
+        
+        for notification in notifications:
+            notification.is_read = True
+        
+        session.commit()
+        session.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Marked {len(notifications)} notifications as read"
+        }), 200
+        
+    except Exception as e:
+        session.close()
+        return jsonify({
+            "success": False,
+            "message": f"Error updating notifications: {str(e)}"
+        }), 500
+
+
+# Message API for chat functionality
+@app.route('/send_message', methods=['POST'])
+def send_message():
+    session = Session()
+    
+    try:
+        data = request.get_json()
+        sender_id = data.get('sender_id')
+        receiver_id = data.get('receiver_id')
+        message_content = data.get('message')
+        mentor_id = data.get('mentor_id')  # Optional mentor_id for mentor-related messages
+        
+        if not sender_id:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "Sender ID is required"
+            }), 400
+        
+        # Get sender user
+        sender = session.query(User).filter_by(id=sender_id).first()
+        
+        if not sender:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "Sender user not found"
+            }), 404
+        
+        if not receiver_id or not message_content:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "Receiver ID and message are required"
+            }), 400
+        
+        # Verify receiver exists
+        receiver = session.query(User).filter_by(id=receiver_id).first()
+        if not receiver:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "Receiver not found"
+            }), 404
+        
+        # Validate mentor_id if provided
+        validated_mentor_id = None
+        if mentor_id:
+            mentor = session.query(Mentor).filter_by(id=mentor_id).first()
+            if mentor:
+                validated_mentor_id = mentor_id
+            # If mentor doesn't exist, set to None (optional field)
+        
+        # Create message in Notification table with message_type='chat'
+        message = Notification(
+            user_id=receiver_id,
+            sender_id=sender.id,
+            mentor_id=validated_mentor_id,
+            message=message_content,
+            message_type='chat',
+            is_read=False
+        )
+        
+        session.add(message)
+        session.commit()
+        
+        # Emit real-time message via Socket.IO to both sender and receiver
+        message_data = {
+            'id': message.id,
+            'sender_id': sender.id,
+            'receiver_id': receiver_id,
+            'sender_name': sender.username,
+            'message': message_content,
+            'timestamp': message.timestamp.isoformat(),
+            'mentor_id': validated_mentor_id
+        }
+        
+        # Debug logging
+        print(f"[REST API] Emitting new_message to user_{receiver_id} and user_{sender.id}")
+        print(f"[REST API] Message data: {message_data}")
+        
+        # Emit to receiver's room
+        socketio.emit('new_message', message_data, room=f"user_{receiver_id}", namespace='/')
+        
+        # Emit to sender's room
+        socketio.emit('new_message', message_data, room=f"user_{sender.id}", namespace='/')
+        
+        session.close()
+        
+        return jsonify({
+            "success": True,
+            "message": "Message sent successfully",
+            "message_id": message.id
+        }), 200
+        
+    except Exception as e:
+        session.close()
+        return jsonify({
+            "success": False,
+            "message": f"Error sending message: {str(e)}"
+        }), 500
+
+
+@app.route('/get_messages/<int:user_id>/<int:partner_id>', methods=['GET'])
+def get_messages(user_id, partner_id):
+    session = Session()
+    
+    try:
+        # Get user by ID
+        user = session.query(User).filter_by(id=user_id).first()
+        
+        if not user:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+        
+        # Get messages between current user and partner (both directions)
+        messages = session.query(Notification).filter(
+            or_(
+                and_(Notification.user_id == user.id, Notification.sender_id == partner_id),
+                and_(Notification.user_id == partner_id, Notification.sender_id == user.id)
+            ),
+            Notification.message_type == 'chat'
+        ).order_by(Notification.timestamp.asc()).all()
+        
+        message_list = []
+        for message in messages:
+            message_data = {
+                "id": message.id,
+                "sender_id": message.sender_id,
+                "receiver_id": message.user_id,
+                "message": message.message,
+                "timestamp": message.timestamp.isoformat(),
+                "is_read": message.is_read,
+                "mentor_id": message.mentor_id
+            }
+            message_list.append(message_data)
+        
+        # Mark messages as read
+        for message in messages:
+            if message.user_id == user.id and not message.is_read:
+                message.is_read = True
+        
+        session.commit()
+        session.close()
+        
+        return jsonify({
+            "success": True,
+            "messages": message_list,
+            "total_count": len(message_list)
+        }), 200
+        
+    except Exception as e:
+        session.close()
+        return jsonify({
+            "success": False,
+            "message": f"Error fetching messages: {str(e)}"
+        }), 500
+
+
+@app.route('/get_chat_list/<int:user_id>', methods=['GET'])
+def get_chat_list(user_id):
+    session = Session()
+    
+    try:
+        # Get user by ID
+        user = session.query(User).filter_by(id=user_id).first()
+        
+        if not user:
+            session.close()
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+        
+        # Get unique users that current user has chatted with
+        chat_partners = session.query(Notification).filter(
+            or_(
+                Notification.sender_id == user.id,
+                Notification.user_id == user.id
+            ),
+            Notification.message_type == 'chat'
+        ).distinct().all()
+        
+        chat_list = []
+        partner_ids = set()
+        
+        for chat in chat_partners:
+            partner_id = chat.sender_id if chat.user_id == user.id else chat.user_id
+            
+            if partner_id not in partner_ids:
+                partner = session.query(User).filter_by(id=partner_id).first()
+                if partner:
+                    # Get last message
+                    last_message = session.query(Notification).filter(
+                        or_(
+                            and_(Notification.sender_id == user.id, Notification.user_id == partner_id),
+                            and_(Notification.sender_id == partner_id, Notification.user_id == user.id)
+                        ),
+                        Notification.message_type == 'chat'
+                    ).order_by(Notification.timestamp.desc()).first()
+                    
+                    # Count unread messages
+                    unread_count = session.query(Notification).filter(
+                        Notification.user_id == user.id,
+                        Notification.sender_id == partner_id,
+                        Notification.message_type == 'chat',
+                        Notification.is_read == False
+                    ).count()
+                    
+                    chat_data = {
+                        "partner_id": partner_id,
+                        "partner_name": partner.username,
+                        "last_message": last_message.message if last_message else "",
+                        "last_message_time": last_message.timestamp.isoformat() if last_message else "",
+                        "unread_count": unread_count
+                    }
+                    chat_list.append(chat_data)
+                    partner_ids.add(partner_id)
+        
+        session.close()
+        
+        return jsonify({
+            "success": True,
+            "chat_list": chat_list
+        }), 200
+        
+    except Exception as e:
+        session.close()
+        return jsonify({
+            "success": False,
+            "message": f"Error fetching chat list: {str(e)}"
+        }), 500
 
 
 @socketio.on('get_notifications')
@@ -2283,20 +2663,132 @@ def handle_get_notifications(data):
     session = Session()
     
     if user_id:
-        
-        notifications = session.query(Notification).filter_by(user_id=user_id).all()
-        
+        notifications = session.query(Notification).filter_by(user_id=user_id).order_by(Notification.timestamp.desc()).all()
         
         notification_messages = [{
+            "id": notification.id,
             "message": notification.message,
             "timestamp": notification.timestamp.isoformat(), 
-            "is_read": notification.is_read
+            "is_read": notification.is_read,
+            "message_type": notification.message_type,
+            "mentor_id": notification.mentor_id
         } for notification in notifications]
 
-       
         emit('notifications', notification_messages, room=f"user_{user_id}")
     else:
         emit('notifications', {'message': 'No user ID provided'}, room=f"user_{user_id}")
+
+
+@socketio.on('join_room')
+def on_join_room(data):
+    user_id = data.get('user_id')
+    room = data.get('room', f"user_{user_id}")
+    
+    if user_id:
+        join_room(room)
+        print(f"User {user_id} joined room: {room}")  # Debug log
+        emit('status', {'msg': f'Joined room {room}'})
+
+
+@socketio.on('send_message_socket')
+def handle_send_message_socket(data):
+    user_id = data.get('user_id')
+    receiver_id = data.get('receiver_id')
+    message = data.get('message')
+    mentor_id = data.get('mentor_id')
+    
+    if not user_id or not receiver_id or not message:
+        emit('error', {'message': 'Missing required fields'})
+        return
+    
+    session = Session()
+    try:
+        # Validate mentor_id if provided
+        validated_mentor_id = None
+        if mentor_id:
+            mentor = session.query(Mentor).filter_by(id=mentor_id).first()
+            if mentor:
+                validated_mentor_id = mentor_id
+            # If mentor doesn't exist, set to None (optional field)
+        
+        # Create message in database
+        message_obj = Notification(
+            user_id=receiver_id,
+            sender_id=user_id,
+            mentor_id=validated_mentor_id,
+            message=message,
+            message_type='chat',
+            is_read=False
+        )
+        
+        session.add(message_obj)
+        session.commit()
+        
+        # Get sender info
+        sender = session.query(User).filter_by(id=user_id).first()
+        
+        message_data = {
+            'id': message_obj.id,
+            'sender_id': user_id,
+            'receiver_id': receiver_id,
+            'sender_name': sender.username if sender else 'Unknown',
+            'message': message,
+            'timestamp': message_obj.timestamp.isoformat(),
+            'mentor_id': validated_mentor_id
+        }
+        
+        # Debug logging
+        print(f"[Socket.IO] Emitting new_message to user_{receiver_id} and user_{user_id}")
+        print(f"[Socket.IO] Message data: {message_data}")
+        
+        # Emit to receiver's room
+        socketio.emit('new_message', message_data, room=f"user_{receiver_id}", namespace='/')
+        
+        # Emit to sender's room (so sender sees their own message)
+        socketio.emit('new_message', message_data, room=f"user_{user_id}", namespace='/')
+        
+        # Emit confirmation to sender
+        emit('message_sent', {
+            'id': message_obj.id,
+            'message': 'Message sent successfully'
+        })
+        
+    except Exception as e:
+        emit('error', {'message': f'Error sending message: {str(e)}'})
+    finally:
+        session.close()
+
+
+@socketio.on('mark_notification_read_socket')
+def handle_mark_notification_read_socket(data):
+    user_id = data.get('user_id')
+    notification_id = data.get('notification_id')
+    
+    if not user_id or not notification_id:
+        emit('error', {'message': 'Missing user_id or notification_id'})
+        return
+    
+    session = Session()
+    try:
+        notification = session.query(Notification).filter_by(
+            id=notification_id,
+            user_id=user_id
+        ).first()
+        
+        if notification:
+            notification.is_read = True
+            session.commit()
+            emit('notification_marked_read', {
+                'notification_id': notification_id,
+                'message': 'Notification marked as read'
+            }, room=f"user_{user_id}")
+        else:
+            emit('error', {'message': 'Notification not found'})
+            
+    except Exception as e:
+        emit('error', {'message': f'Error marking notification as read: {str(e)}'})
+    finally:
+        session.close()
 
 @socketio.on('join')
 def on_join(data):
@@ -3176,14 +3668,21 @@ def new_assign_mentor():
             "is_read": n.is_read
         } for n in user_notifications]
 
-        # Emit notifications to the user
-        socketio.emit('notifications', user_notification_data, room=f"user_{user_id}", namespace='/')
-
+        # Debug logging
+        print(f"[new_assign_mentor] Emitting notification to user_{user_id} and user_{mentor.user_id}")
+        
         # Emit real-time notifications to both user and mentor
-        socketio.emit('notification', {'message': notification_message_user, 'mentor_id': mentor_id, 'user_id': user_id},
-                      room=f"user_{user_id}", namespace='/')
-        socketio.emit('notification', {'message': notification_message_mentor, 'mentor_id': mentor_id, 'user_id': user_id},
-                      room=f"mentor_{mentor.user_id}", namespace='/')
+        socketio.emit('notification', {
+            'message': notification_message_user, 
+            'mentor_id': mentor_id, 
+            'user_id': user_id
+        }, room=f"user_{user_id}", namespace='/')
+        
+        socketio.emit('notification', {
+            'message': notification_message_mentor, 
+            'mentor_id': mentor_id, 
+            'user_id': user_id
+        }, room=f"user_{mentor.user_id}", namespace='/')
 
         return jsonify({"message": "Mentor assigned successfully."}), 200
 
@@ -4236,8 +4735,8 @@ def handle_message(data):
         session.close()
 
 
-@socketio.on('join_room')
-def handle_join_room(data):
+@socketio.on('join_chat_room')
+def handle_join_chat_room(data):
     sender_id = data.get('sender_id')
     receiver_id = data.get('receiver_id')
 
