@@ -436,7 +436,16 @@ app.config['GOOGLE_DISCOVERY_URL'] = (
 )
 
 mail = Mail(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*",
+    async_mode='threading',  # Use threading for better WebSocket support
+    logger=True,  # Enable logging for debugging
+    engineio_logger=True,  # Enable Engine.IO logging
+    ping_timeout=60,  # Increase timeout
+    ping_interval=25,  # Keep connection alive
+    manage_session=False  # Don't manage Flask sessions
+)
 jwt = JWTManager(app)
 
 client = WebApplicationClient(app.config['GOOGLE_CLIENT_ID'])
