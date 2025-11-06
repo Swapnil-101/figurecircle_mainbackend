@@ -1176,9 +1176,9 @@ def add_mentor():
 
 
 
-@app.route('/update_mentor/<int:mentor_id>', methods=['PUT'])
-@jwt_required()
-def update_mentor(mentor_id):
+# @app.route('/update_mentor/<int:mentor_id>', methods=['PUT'])
+# @jwt_required()
+# def update_mentor(mentor_id):
     session = Session()
 
     # Query the mentor by mentor_id
@@ -3623,6 +3623,119 @@ def add_new_mentor():
     except Exception as e:
         session.rollback()
         return jsonify({'error': str(e)}), 500
+
+
+# Update existing mentor
+@app.route('/update_mentor/<int:mentor_id>', methods=['PUT'])
+@jwt_required()
+def update_mentor(mentor_id):
+    current_user = get_jwt_identity()
+    session = Session()
+   
+    # Fetch the user based on the JWT identity
+    user = session.query(User).filter_by(username=current_user).first()
+   
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+   
+    try:
+        # Fetch the existing mentor
+        mentor = session.query(Newmentor).filter_by(mentor_id=mentor_id).first()
+        
+        if not mentor:
+            return jsonify({'error': 'Mentor not found'}), 404
+        
+        # Check if the mentor belongs to the current user
+        if mentor.user_id != user.id:
+            return jsonify({'error': 'Unauthorized to update this mentor'}), 403
+        
+        data = request.get_json()
+        
+        # Check if email is being updated and if it already exists for another mentor
+        if 'email' in data:
+            new_email = data['email']
+            # Only check if the email is actually changing
+            if new_email != mentor.email:
+                # Check if email already exists for another mentor
+                existing_mentor = session.query(Newmentor).filter(
+                    Newmentor.email == new_email,
+                    Newmentor.mentor_id != mentor_id
+                ).first()
+                if existing_mentor:
+                    return jsonify({'error': 'Email already exists'}), 400
+        
+        # Update fields if provided
+        if 'name' in data:
+            mentor.name = data['name']
+        if 'email' in data:
+            mentor.email = data['email']
+        if 'phone' in data:
+            mentor.phone = data['phone']
+        if 'linkedin' in data:
+            mentor.linkedin = data['linkedin']
+        if 'expertise' in data:
+            mentor.expertise = data['expertise']
+        if 'degree' in data:
+            mentor.degree = data['degree']
+        if 'background' in data:
+            mentor.background = data['background']
+        if 'fee' in data:
+            mentor.fee = data['fee']
+        if 'milestones' in data:
+            mentor.milestones = data['milestones']
+        if 'profile_picture' in data:
+            mentor.profile_picture = data['profile_picture']
+        if 'resume' in data:
+            mentor.resume = data['resume']
+        if 'current_role' in data:
+            mentor.current_role = data['current_role']
+        if 'work_experience' in data:
+            mentor.work_experience = data['work_experience']
+        if 'interested_field' in data:
+            mentor.interested_field = data['interested_field']
+        
+        # Validate and update availability data
+        if 'availability' in data:
+            availability = data['availability']
+            if availability:
+                for slot in availability:
+                    if not all(key in slot for key in ['day', 'startTime', 'endTime']):
+                        return jsonify({'error': 'Invalid availability format'}), 400
+            mentor.availability = availability
+        
+        # Validate and update intent_price data
+        if 'intent_price' in data:
+            intent_price = data['intent_price']
+            if intent_price:
+                for item in intent_price:
+                    if not all(key in item for key in ['intent', 'price']):
+                        return jsonify({'error': 'Invalid intent_price format. Each item must have "intent" and "price" fields'}), 400
+                    # Validate that price is a valid number
+                    try:
+                        float(item['price'])
+                    except (ValueError, TypeError):
+                        return jsonify({'error': 'Price must be a valid number'}), 400
+            mentor.intent_price = intent_price
+        
+        session.commit()
+        
+        return jsonify({
+            'message': 'Mentor updated successfully',
+            'mentor_id': mentor.mentor_id,
+            'name': mentor.name,
+            'email': mentor.email,
+            'availability': mentor.availability,
+            'intent_price': mentor.intent_price
+        }), 200
+        
+    except IntegrityError:
+        session.rollback()
+        return jsonify({'error': 'Email already exists'}), 400
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
     
     
 #mentor assign
@@ -3752,6 +3865,85 @@ def get_assigned_mentors_list():
         session.close()
 
 
+# Get count of users assigned to a specific mentor
+@app.route('/mentor_assigned_users_count/<int:mentor_id>', methods=['GET'])
+@jwt_required()
+def get_mentor_assigned_users_count(mentor_id):
+    session = Session()
+    
+    try:
+        # Check if mentor exists
+        mentor = session.query(Newmentor).filter_by(mentor_id=mentor_id).first()
+        
+        if not mentor:
+            return jsonify({'error': 'Mentor not found'}), 404
+        
+        # Count the number of users assigned to this mentor
+        assigned_users_count = session.query(UserMentorAssignment).filter_by(mentor_id=mentor_id).count()
+        
+        # Optionally, get the list of assigned user IDs
+        assignments = session.query(UserMentorAssignment).filter_by(mentor_id=mentor_id).all()
+        
+        assigned_users = []
+        for assignment in assignments:
+            user = assignment.user
+            # In this system, username is used as email
+            email = user.email if hasattr(user, 'email') and user.email else user.username
+            
+            user_detail = {
+                'user_id': user.id,
+                'username': user.username,
+                'email': email,
+                'assigned_at': assignment.assigned_at.isoformat() if assignment.assigned_at else None
+            }
+            
+            # Add user details if available
+            if user.details:
+                user_detail.update({
+                    'first_name': user.details.first_name,
+                    'last_name': user.details.last_name,
+                    'school_name': user.details.school_name,
+                    'bachelors_degree': user.details.bachelors_degree,
+                    'masters_degree': user.details.masters_degree,
+                    'certification': user.details.certification,
+                    'activity': user.details.activity,
+                    'country': user.details.country,
+                    'stream_name': user.details.stream_name,
+                    'data_filled': user.details.data_filled
+                })
+            
+            # Add basic info if available (using username as email)
+            basic_info = session.query(BasicInfo).filter_by(emailid=email).first()
+            if basic_info:
+                user_detail.update({
+                    'basic_info': {
+                        'firstname': basic_info.firstname,
+                        'lastname': basic_info.lastname,
+                        'high_education': basic_info.high_education,
+                        'interested_stream': basic_info.interested_stream,
+                        'role_based': basic_info.role_based,
+                        'work_experience': basic_info.work_experience,
+                        'industry': basic_info.industry,
+                        'role': basic_info.role,
+                        'intent': basic_info.intent,
+                        'bachelor': basic_info.bachelor
+                    }
+                })
+            
+            assigned_users.append(user_detail)
+        
+        return jsonify({
+            'mentor_id': mentor_id,
+            'mentor_name': mentor.name,
+            'mentor_email': mentor.email,
+            'assigned_users_count': assigned_users_count,
+            'assigned_users': assigned_users
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
 
 
 @app.route('/recommended_mentors', methods=['GET'])
