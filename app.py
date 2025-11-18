@@ -30,6 +30,8 @@ from flasgger import Swagger
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import PickleType
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from uuid import uuid4
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -328,6 +330,49 @@ class Notification(Base):
     
     
     
+class Wallet(Base):
+    __tablename__ = 'wallets'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_type = Column(String(20), nullable=False)  # 'user' or 'mentor'
+    owner_id = Column(Integer, nullable=False)
+    balance_paise = Column(Integer, nullable=False, default=0)
+    currency = Column(String(3), nullable=False, default='INR')
+    razorpay_contact_id = Column(String(100), nullable=True)
+    razorpay_fund_account_id = Column(String(100), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    transactions = relationship('WalletTransaction', back_populates='wallet', cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint('owner_type', 'owner_id', name='_wallet_owner_uc'),
+    )
+
+
+class WalletTransaction(Base):
+    __tablename__ = 'wallet_transactions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    wallet_id = Column(Integer, ForeignKey('wallets.id', ondelete='CASCADE'), nullable=False, index=True)
+    transaction_type = Column(String(20), nullable=False)  # 'credit' or 'debit'
+    amount_paise = Column(Integer, nullable=False)  # Stored in paise to avoid floating point issues
+    currency = Column(String(3), nullable=False, default='INR')
+    status = Column(String(20), nullable=False, default='pending')  # 'pending', 'completed', 'failed'
+    razorpay_order_id = Column(String(100), nullable=True)
+    razorpay_payment_id = Column(String(100), nullable=True)
+    razorpay_signature = Column(String(255), nullable=True)
+    notes = Column(JSON, nullable=True)
+    closing_balance_paise = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    wallet = relationship('Wallet', back_populates='transactions')
+
+    __table_args__ = (
+        UniqueConstraint('razorpay_order_id', 'wallet_id', name='_wallet_order_uc'),
+    )
+
+
 #meeting class
 class Schedule(Base):
     __tablename__ = 'schedules'
@@ -408,6 +453,117 @@ class MeetingNotification(Base):
 
     
 Session = sessionmaker(bind=engine)
+
+VALID_WALLET_OWNER_TYPES = {'user', 'mentor'}
+
+
+def _get_authenticated_entities(session, identity):
+    """
+    Returns a tuple of (user, admin) for the provided JWT identity.
+    Only one of them will be non-null.
+    """
+    if not identity:
+        return None, None
+
+    user = session.query(User).filter_by(username=identity).first()
+    if user:
+        return user, None
+
+    admin = session.query(Admin).filter_by(username=identity).first()
+    return None, admin
+
+
+def ensure_wallet_access(session, identity, owner_type, owner_id):
+    """
+    Validates that the current identity is allowed to manage the requested wallet.
+    Returns (owner_record, user, admin, error_response)
+    """
+    if owner_type not in VALID_WALLET_OWNER_TYPES:
+        return None, None, None, (jsonify({'error': 'Invalid owner_type supplied'}), 400)
+
+    user, admin = _get_authenticated_entities(session, identity)
+
+    if owner_type == 'user':
+        owner = session.query(User).filter_by(id=owner_id).first()
+        if not owner:
+            return None, None, None, (jsonify({'error': 'User not found'}), 404)
+        if admin or (user and user.id == owner_id):
+            return owner, user, admin, None
+        return None, None, None, (jsonify({'error': 'Unauthorized to access this user wallet'}), 403)
+
+    # owner_type == 'mentor'
+    owner = session.query(Newmentor).filter_by(mentor_id=owner_id).first()
+    if not owner:
+        return None, None, None, (jsonify({'error': 'Mentor not found'}), 404)
+    if admin or (user and owner.user_id == user.id):
+        return owner, user, admin, None
+    return None, None, None, (jsonify({'error': 'Unauthorized to access this mentor wallet'}), 403)
+
+
+def rupees_to_paise(amount):
+    try:
+        value = Decimal(str(amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, TypeError):
+        raise ValueError('Invalid amount format. Provide a numeric value with at most two decimal places.')
+
+    if value <= 0:
+        raise ValueError('Amount must be greater than zero.')
+
+    paise = int((value * 100).to_integral_value(rounding=ROUND_HALF_UP))
+    return paise
+
+
+def paise_to_rupees(paise):
+    if paise is None:
+        return 0.0
+    return float(Decimal(paise) / Decimal(100))
+
+
+def get_or_create_wallet(session, owner_type, owner_id):
+    wallet = (
+        session.query(Wallet)
+        .filter_by(owner_type=owner_type, owner_id=owner_id)
+        .first()
+    )
+    if not wallet:
+        wallet = Wallet(owner_type=owner_type, owner_id=owner_id)
+        session.add(wallet)
+        session.flush()
+    return wallet
+
+
+def serialize_wallet(wallet):
+    return {
+        'wallet_id': wallet.id,
+        'owner_type': wallet.owner_type,
+        'owner_id': wallet.owner_id,
+        'balance': paise_to_rupees(wallet.balance_paise),
+        'balance_paise': wallet.balance_paise,
+        'currency': wallet.currency,
+        'razorpay_contact_id': wallet.razorpay_contact_id,
+        'razorpay_fund_account_id': wallet.razorpay_fund_account_id,
+        'created_at': wallet.created_at.isoformat() if wallet.created_at else None,
+        'updated_at': wallet.updated_at.isoformat() if wallet.updated_at else None,
+    }
+
+
+def serialize_wallet_transaction(transaction):
+    return {
+        'transaction_id': transaction.id,
+        'wallet_id': transaction.wallet_id,
+        'transaction_type': transaction.transaction_type,
+        'amount': paise_to_rupees(transaction.amount_paise),
+        'amount_paise': transaction.amount_paise,
+        'currency': transaction.currency,
+        'status': transaction.status,
+        'razorpay_order_id': transaction.razorpay_order_id,
+        'razorpay_payment_id': transaction.razorpay_payment_id,
+        'closing_balance': paise_to_rupees(transaction.closing_balance_paise) if transaction.closing_balance_paise is not None else None,
+        'closing_balance_paise': transaction.closing_balance_paise,
+        'notes': transaction.notes,
+        'created_at': transaction.created_at.isoformat() if transaction.created_at else None,
+    }
+
 
 app = Flask(__name__)
 swagger = Swagger(app)
@@ -988,12 +1144,12 @@ def dream_list():
             "match_type": "exact",
             "confidence": 100
         })
-        # Add up to 3 more fuzzy matches excluding the exact match
+        # Add all fuzzy matches excluding the exact match
         candidates = [role for role in role_map.keys() if role != query]
-        fuzzy_matches = process.extract(query, candidates, limit=3)
+        fuzzy_matches = process.extract(query, candidates, limit=None)
     else:
-        # No exact match; get top 4 fuzzy matches
-        fuzzy_matches = process.extract(query, role_map.keys(), limit=4)
+        # No exact match; get all fuzzy matches
+        fuzzy_matches = process.extract(query, role_map.keys(), limit=None)
 
     # Append fuzzy matches
     for best_match, score in (fuzzy_matches or []):
@@ -1437,30 +1593,65 @@ def get_schedules():
         if not user_id and not mentor_id:
             return jsonify({"error": "Either user_id or mentor_id is required"}), 400
 
-        # Retrieve schedules with user_id first
-        schedules = []
+        filters = []
         if user_id:
-            schedules = session.query(Schedule).filter(Schedule.user_id == user_id).all()
+            filters.append((Schedule.user_id, TrialSchedule.user_id, user_id))
+        if mentor_id:
+            filters.append((Schedule.mentor_id, TrialSchedule.mentor_id, mentor_id))
 
-        # If no schedules are found, search with mentor_id
-        if not schedules and mentor_id:
-            schedules = session.query(Schedule).filter(Schedule.mentor_id == mentor_id).all()
+        def apply_filters(query, model):
+            for schedule_field, trial_field, value in filters:
+                field = schedule_field if model is Schedule else trial_field
+                query = query.filter(field == value)
+            return query
 
-        # Return the results
-        return jsonify([{
-            "id": s.id,
-            "name": s.name,
-            "email": s.email,
-            "start_datetime": s.start_datetime.isoformat(),
-            "end_datetime": s.end_datetime.isoformat(),
-            "link": s.link,
-            "created_at": s.created_at.isoformat(),
-            "mentor_id": s.mentor_id,
-            "mentor_name": s.mentor_name,
-            "mentor_email": s.mentor_email,
-            "user_id": s.user_id,
-            "duration": s.duration
-        } for s in schedules]), 200
+        schedule_query = apply_filters(session.query(Schedule), Schedule)
+        trial_query = apply_filters(session.query(TrialSchedule), TrialSchedule)
+
+        schedule_results = [
+            {
+                "id": s.id,
+                "name": s.name,
+                "email": s.email,
+                "start_datetime": s.start_datetime.isoformat(),
+                "end_datetime": s.end_datetime.isoformat(),
+                "link": s.link,
+                "created_at": s.created_at.isoformat(),
+                "mentor_id": s.mentor_id,
+                "mentor_name": s.mentor_name,
+                "mentor_email": s.mentor_email,
+                "user_id": s.user_id,
+                "duration": s.duration,
+                "timezone": s.timezone,
+                "meeting_type": "regular"
+            }
+            for s in schedule_query.all()
+        ]
+
+        trial_results = [
+            {
+                "id": t.id,
+                "name": t.name,
+                "email": t.email,
+                "start_datetime": t.start_datetime.isoformat(),
+                "end_datetime": t.end_datetime.isoformat(),
+                "link": t.link,
+                "created_at": t.created_at.isoformat(),
+                "mentor_id": t.mentor_id,
+                "mentor_name": t.mentor_name,
+                "mentor_email": t.mentor_email,
+                "user_id": t.user_id,
+                "duration": t.duration,
+                "timezone": t.timezone,
+                "meeting_type": "trial"
+            }
+            for t in trial_query.all()
+        ]
+
+        combined_results = schedule_results + trial_results
+        combined_results.sort(key=lambda item: item["start_datetime"])
+
+        return jsonify(combined_results), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 400
     finally:
@@ -2212,6 +2403,360 @@ def verify_payment():
 
     return jsonify({"message": "Payment verified successfully!"}), 200
 
+
+@app.route('/wallet/init', methods=['POST'])
+@jwt_required()
+def init_wallet():
+    identity = get_jwt_identity()
+    data = request.get_json() or {}
+    owner_type = data.get('owner_type')
+    owner_id = data.get('owner_id')
+
+    if owner_id is None:
+        return jsonify({'error': 'owner_id is required'}), 400
+
+    try:
+        owner_id_int = int(owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_id must be an integer'}), 400
+
+    session = Session()
+    try:
+        existing_wallet = session.query(Wallet).filter_by(owner_type=owner_type, owner_id=owner_id_int).first()
+        if existing_wallet:
+            response = serialize_wallet(existing_wallet)
+            session.close()
+            return jsonify({'wallet': response, 'message': 'Wallet already exists'}), 200
+
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, owner_type, owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        wallet = Wallet(owner_type=owner_type, owner_id=owner_id_int)
+        session.add(wallet)
+        session.commit()
+        session.refresh(wallet)
+
+        response = serialize_wallet(wallet)
+        session.close()
+        return jsonify({'wallet': response, 'message': 'Wallet created successfully'}), 201
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wallet/balance', methods=['GET'])
+@jwt_required()
+def wallet_balance():
+    identity = get_jwt_identity()
+    owner_type = request.args.get('owner_type')
+    owner_id = request.args.get('owner_id')
+
+    if not owner_type or owner_id is None:
+        return jsonify({'error': 'owner_type and owner_id are required'}), 400
+
+    try:
+        owner_id_int = int(owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_id must be an integer'}), 400
+
+    session = Session()
+    try:
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, owner_type, owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        wallet = session.query(Wallet).filter_by(owner_type=owner_type, owner_id=owner_id_int).first()
+        if not wallet:
+            session.close()
+            return jsonify({'error': 'Wallet not found. Initialize it first.'}), 404
+
+        response = serialize_wallet(wallet)
+        session.close()
+        return jsonify({'wallet': response}), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wallet/add-money', methods=['POST'])
+@jwt_required()
+def wallet_add_money():
+    identity = get_jwt_identity()
+    data = request.get_json() or {}
+    owner_type = data.get('owner_type')
+    owner_id = data.get('owner_id')
+    amount = data.get('amount')
+    notes = data.get('notes') or {}
+
+    if owner_id is None or amount is None:
+        return jsonify({'error': 'owner_id and amount are required'}), 400
+
+    try:
+        owner_id_int = int(owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_id must be an integer'}), 400
+
+    if not isinstance(notes, dict):
+        notes = {'info': str(notes)}
+
+    session = Session()
+    try:
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, owner_type, owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        try:
+            amount_paise = rupees_to_paise(amount)
+        except ValueError as ve:
+            session.close()
+            return jsonify({'error': str(ve)}), 400
+
+        wallet = get_or_create_wallet(session, owner_type, owner_id_int)
+        session.flush()
+
+        receipt = f"wallet_{uuid4().hex}"
+        razorpay_order = razorpay_client.order.create({
+            'amount': amount_paise,
+            'currency': wallet.currency,
+            'payment_capture': 1,
+            'receipt': receipt,
+            'notes': {
+                'owner_type': owner_type,
+                'owner_id': str(owner_id_int),
+                'wallet_id': str(wallet.id),
+                **{str(k): str(v) for k, v in notes.items()}
+            }
+        })
+
+        transaction = WalletTransaction(
+            wallet_id=wallet.id,
+            transaction_type='credit',
+            amount_paise=amount_paise,
+            currency=wallet.currency,
+            status='pending',
+            razorpay_order_id=razorpay_order['id'],
+            notes=notes
+        )
+        session.add(transaction)
+        session.commit()
+        session.refresh(transaction)
+
+        response = {
+            'order': razorpay_order,
+            'transaction': serialize_wallet_transaction(transaction),
+            'wallet': serialize_wallet(wallet)
+        }
+        session.close()
+        return jsonify(response), 201
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wallet/confirm', methods=['POST'])
+@jwt_required()
+def wallet_confirm_payment():
+    identity = get_jwt_identity()
+    data = request.get_json() or {}
+    owner_type = data.get('owner_type')
+    owner_id = data.get('owner_id')
+    order_id = data.get('razorpay_order_id')
+    payment_id = data.get('razorpay_payment_id')
+    signature = data.get('razorpay_signature')
+
+    if owner_id is None or not order_id or not payment_id or not signature:
+        return jsonify({'error': 'owner_id, razorpay_order_id, razorpay_payment_id, and razorpay_signature are required'}), 400
+
+    try:
+        owner_id_int = int(owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_id must be an integer'}), 400
+
+    session = Session()
+    try:
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, owner_type, owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        wallet = session.query(Wallet).filter_by(owner_type=owner_type, owner_id=owner_id_int).first()
+        if not wallet:
+            session.close()
+            return jsonify({'error': 'Wallet not found. Initialize it first.'}), 404
+
+        transaction = session.query(WalletTransaction).filter_by(wallet_id=wallet.id, razorpay_order_id=order_id).first()
+        if not transaction:
+            session.close()
+            return jsonify({'error': 'No pending transaction found for the provided order ID'}), 404
+
+        if transaction.status == 'completed':
+            response = {
+                'message': 'Transaction already completed',
+                'wallet': serialize_wallet(wallet),
+                'transaction': serialize_wallet_transaction(transaction)
+            }
+            session.close()
+            return jsonify(response), 200
+
+        try:
+            razorpay_client.utility.verify_payment_signature({
+                'razorpay_order_id': order_id,
+                'razorpay_payment_id': payment_id,
+                'razorpay_signature': signature
+            })
+        except razorpay.errors.SignatureVerificationError:
+            session.close()
+            return jsonify({'error': 'Payment verification failed'}), 400
+
+        wallet.balance_paise += transaction.amount_paise
+        transaction.status = 'completed'
+        transaction.razorpay_payment_id = payment_id
+        transaction.razorpay_signature = signature
+        transaction.closing_balance_paise = wallet.balance_paise
+
+        session.commit()
+        session.refresh(wallet)
+        session.refresh(transaction)
+
+        response = {
+            'message': 'Wallet credited successfully',
+            'wallet': serialize_wallet(wallet),
+            'transaction': serialize_wallet_transaction(transaction)
+        }
+        session.close()
+        return jsonify(response), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wallet/debit', methods=['POST'])
+@jwt_required()
+def wallet_debit():
+    identity = get_jwt_identity()
+    data = request.get_json() or {}
+    owner_type = data.get('owner_type')
+    owner_id = data.get('owner_id')
+    amount = data.get('amount')
+    reference = data.get('reference')
+    notes = data.get('notes') or {}
+
+    if owner_id is None or amount is None:
+        return jsonify({'error': 'owner_id and amount are required'}), 400
+
+    try:
+        owner_id_int = int(owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_id must be an integer'}), 400
+
+    if not isinstance(notes, dict):
+        notes = {'info': str(notes)}
+
+    session = Session()
+    try:
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, owner_type, owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        wallet = session.query(Wallet).filter_by(owner_type=owner_type, owner_id=owner_id_int).first()
+        if not wallet:
+            session.close()
+            return jsonify({'error': 'Wallet not found. Initialize it first.'}), 404
+
+        try:
+            amount_paise = rupees_to_paise(amount)
+        except ValueError as ve:
+            session.close()
+            return jsonify({'error': str(ve)}), 400
+
+        if wallet.balance_paise < amount_paise:
+            session.close()
+            return jsonify({'error': 'Insufficient wallet balance'}), 400
+
+        wallet.balance_paise -= amount_paise
+        transaction = WalletTransaction(
+            wallet_id=wallet.id,
+            transaction_type='debit',
+            amount_paise=amount_paise,
+            currency=wallet.currency,
+            status='completed',
+            notes={**notes, 'reference': reference} if reference else notes,
+            closing_balance_paise=wallet.balance_paise
+        )
+        session.add(transaction)
+        session.commit()
+        session.refresh(wallet)
+        session.refresh(transaction)
+
+        response = {
+            'message': 'Wallet debited successfully',
+            'wallet': serialize_wallet(wallet),
+            'transaction': serialize_wallet_transaction(transaction)
+        }
+        session.close()
+        return jsonify(response), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wallet/transactions', methods=['GET'])
+@jwt_required()
+def wallet_transactions():
+    identity = get_jwt_identity()
+    owner_type = request.args.get('owner_type')
+    owner_id = request.args.get('owner_id')
+    limit = request.args.get('limit', default=50, type=int)
+
+    if not owner_type or owner_id is None:
+        return jsonify({'error': 'owner_type and owner_id are required'}), 400
+
+    try:
+        owner_id_int = int(owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_id must be an integer'}), 400
+
+    session = Session()
+    try:
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, owner_type, owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        wallet = session.query(Wallet).filter_by(owner_type=owner_type, owner_id=owner_id_int).first()
+        if not wallet:
+            session.close()
+            return jsonify({'error': 'Wallet not found. Initialize it first.'}), 404
+
+        transactions = (
+            session.query(WalletTransaction)
+            .filter_by(wallet_id=wallet.id)
+            .order_by(WalletTransaction.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+        response = {
+            'wallet': serialize_wallet(wallet),
+            'transactions': [serialize_wallet_transaction(txn) for txn in transactions],
+            'count': len(transactions)
+        }
+        session.close()
+        return jsonify(response), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
 
 
 # @app.route('/assign_mentor', methods=['POST'])
@@ -3058,7 +3603,7 @@ def get_milestone():
         mentor_id = request.args.get('mentor_id')
         user_id = request.args.get('user_id')
         history = request.args.get('history', default='0')
-
+        
         if not mentor_id or not user_id:
             return jsonify({"error": "mentor_id and user_id are required"}), 400
 
@@ -3068,7 +3613,7 @@ def get_milestone():
         ).first()
 
         if not milestone_entry:
-            return jsonify({"error": "No milestone found for the given mentor_id and user_id"}), 404
+            return jsonify([]), 200
 
         # Get milestone list
         milestone_list = milestone_entry.milestone or []
@@ -3091,6 +3636,71 @@ def get_milestone():
         }
 
         # If history=1, include full milestone list and count
+        if history == '1':
+            milestone_data["milestone_history"] = milestone_list
+            milestone_data["history_count"] = len(milestone_list)
+
+        return jsonify(milestone_data), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route('/api/milestone/by-check-meeting', methods=['GET'])
+@jwt_required()
+def get_milestone_by_check_meeting():
+    session = Session()
+    try:
+        def _clean_param(param_name):
+            value = request.args.get(param_name)
+            return value.strip() if isinstance(value, str) else value
+
+        mentor_id = _clean_param('mentor_id')
+        user_id = _clean_param('user_id')
+        check_meeting_id = _clean_param('check_meeting_id')
+        history = request.args.get('history', default='0')
+
+        if not mentor_id or not user_id:
+            return jsonify({"error": "mentor_id and user_id are required"}), 400
+
+        try:
+            mentor_id_int = int(mentor_id)
+            user_id_int = int(user_id)
+            check_meeting_id_int = int(check_meeting_id) if check_meeting_id else None
+        except ValueError:
+            return jsonify({"error": "mentor_id, user_id, and check_meeting_id (if provided) must be integers"}), 400
+
+        milestone_query = session.query(UserMentorship).filter_by(
+            mentor_id=mentor_id_int,
+            user_id=user_id_int
+        )
+
+        if check_meeting_id_int is not None:
+            milestone_query = milestone_query.filter_by(check_meeting_id=check_meeting_id_int)
+
+        milestone_entry = milestone_query.order_by(UserMentorship.created_at.desc()).first()
+
+        if not milestone_entry:
+            missing_fields = "mentor_id, user_id, and check_meeting_id" if check_meeting_id else "mentor_id and user_id"
+            return jsonify({"error": f"No milestone found for the given {missing_fields}"}), 404
+
+        milestone_list = milestone_entry.milestone or []
+        latest_milestone = milestone_list[-1] if isinstance(milestone_list, list) and milestone_list else {}
+        history_count = len(milestone_list)
+
+        milestone_data = {
+            "serial_number": milestone_entry.serial_number,
+            "user_id": milestone_entry.user_id,
+            "mentor_id": milestone_entry.mentor_id,
+            "latest_milestone": latest_milestone,
+            "check_id": milestone_entry.check_id,
+            "check_meeting_id": milestone_entry.check_meeting_id,
+            "created_at": milestone_entry.created_at,
+            "history_count": history_count
+        }
+
         if history == '1':
             milestone_data["milestone_history"] = milestone_list
             milestone_data["history_count"] = len(milestone_list)
@@ -3925,7 +4535,7 @@ def get_mentor_assigned_users_count(mentor_id):
                         'work_experience': basic_info.work_experience,
                         'industry': basic_info.industry,
                         'role': basic_info.role,
-                        'intent': basic_info.intent,
+                        'intent': _deserialize_intent_payload(basic_info.intent),
                         'bachelor': basic_info.bachelor
                     }
                 })
@@ -4334,6 +4944,38 @@ def get_intent():
 
 
 
+def _serialize_intent_payload(intent_payload):
+    """Ensure intent payload is stored as JSON string."""
+    if intent_payload is None:
+        return None
+
+    parsed_payload = intent_payload
+    if isinstance(intent_payload, str):
+        try:
+            parsed_payload = json.loads(intent_payload)
+        except json.JSONDecodeError:
+            raise ValueError("Intent must be a valid JSON object")
+
+    if not isinstance(parsed_payload, dict):
+        raise ValueError("Intent must be provided as a JSON object with boolean flags")
+
+    return json.dumps(parsed_payload)
+
+
+def _deserialize_intent_payload(intent_value):
+    if intent_value is None:
+        return None
+    if isinstance(intent_value, dict):
+        return intent_value
+    try:
+        parsed = json.loads(intent_value)
+        if isinstance(parsed, dict):
+            return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return intent_value
+
+
 @app.route('/api/basic-info', methods=['POST'])
 def create_basic_info():
     data = request.get_json()
@@ -4362,6 +5004,11 @@ def create_basic_info():
         
 
 
+        try:
+            serialized_intent = _serialize_intent_payload(data.get('intent'))
+        except ValueError as intent_error:
+            return jsonify({'error': str(intent_error)}), 400
+
         # Create new basic_info record using manually provided useruniqid
         new_info = BasicInfo(
             emailid=data['emailid'],
@@ -4375,7 +5022,7 @@ def create_basic_info():
             work_experience=data.get('work_experience'),
             industry=data.get('industry'),
             role=data.get('role'),
-            intent=data.get('intent'),
+            intent=serialized_intent,
             bachelor=data.get('bachelor')
         )
 
@@ -4421,7 +5068,7 @@ def get_basic_info():
             'work_experience': user_info.work_experience,
             'industry': user_info.industry,
             'role': user_info.role,
-            'intent': user_info.intent,
+            'intent': _deserialize_intent_payload(user_info.intent),
             'bachelor': user_info.bachelor,
         }
         return jsonify(result), 200
@@ -4468,7 +5115,10 @@ def update_basic_info():
         if 'role' in data:
             user_info.role = data['role']
         if 'intent' in data:
-            user_info.intent = data['intent']
+            try:
+                user_info.intent = _serialize_intent_payload(data['intent'])
+            except ValueError as intent_error:
+                return jsonify({'error': str(intent_error)}), 400
         if 'bachelor' in data:
             user_info.bachelor = data['bachelor']
 
@@ -5532,6 +6182,27 @@ def get_experience_level_list():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
+
+@app.route('/api/experience-level/ranges', methods=['GET'])
+def get_experience_level_ranges():
+    """Return contiguous experience ranges in 'start-end Years' format."""
+    static_ranges = [
+        {"label": "0-1 Years", "start": 0, "end": 1},
+        {"label": "1-3 Years", "start": 1, "end": 3},
+        {"label": "3-5 Years", "start": 3, "end": 5},
+        {"label": "5-8 Years", "start": 5, "end": 8},
+        {"label": "8-12 Years", "start": 8, "end": 12},
+        {"label": "12+ Years", "start": 12, "end": None},
+    ]
+
+    response_payload = {
+        "experience_ranges": [item["label"] for item in static_ranges],
+        "range_details": static_ranges,
+        "max_year_value": "12+"
+    }
+
+    return jsonify(response_payload), 200
 
 @app.route('/api/experience-level', methods=['POST'])
 @jwt_required()
