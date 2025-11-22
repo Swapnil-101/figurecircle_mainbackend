@@ -662,6 +662,16 @@ def google_callback():
             # Create a new user account if not existing
             user = User(username=users_email, google_id=unique_id)
             session.add(user)
+            session.flush()  # Flush to get the user ID
+            
+            # Create empty user details for the new user
+            new_user_details = UserDetails(user=user)
+            session.add(new_user_details)
+            
+            # Automatically create wallet for the new user
+            user_wallet = Wallet(owner_type='user', owner_id=user.id)
+            session.add(user_wallet)
+            
             session.commit()
 
         data_fill = user.details.data_filled if user.details else False
@@ -692,10 +702,15 @@ def register():
     hashed_password = generate_password_hash(password)
     new_user = User(username=username, password=hashed_password)
     session.add(new_user)
+    session.flush()  # Flush to get the user ID
 
     # Create empty user details for the new user
     new_user_details = UserDetails(user=new_user)
     session.add(new_user_details)
+
+    # Automatically create wallet for the new user
+    user_wallet = Wallet(owner_type='user', owner_id=new_user.id)
+    session.add(user_wallet)
 
     session.commit()
     session.close()
@@ -2710,6 +2725,239 @@ def wallet_debit():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/wallet/pay-mentor', methods=['POST'])
+@jwt_required()
+def wallet_pay_mentor():
+    """
+    Pay a mentor using wallet balance. This endpoint:
+    1. Debits amount from user's wallet
+    2. Credits amount to mentor's wallet
+    3. Creates transactions for both wallets
+    """
+    identity = get_jwt_identity()
+    data = request.get_json() or {}
+    user_id = data.get('user_id')
+    mentor_id = data.get('mentor_id')
+    amount = data.get('amount')
+    notes = data.get('notes') or {}
+    reference = data.get('reference')  # e.g., 'mentor_hiring', 'session_payment', etc.
+
+    if not all([user_id, mentor_id, amount]):
+        return jsonify({'error': 'user_id, mentor_id, and amount are required'}), 400
+
+    try:
+        user_id_int = int(user_id)
+        mentor_id_int = int(mentor_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'user_id and mentor_id must be integers'}), 400
+
+    if not isinstance(notes, dict):
+        notes = {'info': str(notes)}
+
+    session = Session()
+    try:
+        # Verify user has access to their wallet
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, 'user', user_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        # Get user and mentor wallets
+        user_wallet = session.query(Wallet).filter_by(owner_type='user', owner_id=user_id_int).first()
+        if not user_wallet:
+            session.close()
+            return jsonify({'error': 'User wallet not found. Please initialize wallet first.'}), 404
+
+        mentor_wallet = get_or_create_wallet(session, 'mentor', mentor_id_int)
+        session.flush()
+
+        # Verify mentor exists
+        mentor = session.query(Newmentor).filter_by(mentor_id=mentor_id_int).first()
+        if not mentor:
+            session.close()
+            return jsonify({'error': 'Mentor not found'}), 404
+
+        # Convert amount to paise
+        try:
+            amount_paise = rupees_to_paise(amount)
+        except ValueError as ve:
+            session.close()
+            return jsonify({'error': str(ve)}), 400
+
+        # Check if user has sufficient balance
+        if user_wallet.balance_paise < amount_paise:
+            session.close()
+            return jsonify({
+                'error': 'Insufficient wallet balance',
+                'current_balance': paise_to_rupees(user_wallet.balance_paise),
+                'required_amount': paise_to_rupees(amount_paise)
+            }), 400
+
+        # Debit from user wallet
+        user_wallet.balance_paise -= amount_paise
+        user_debit_transaction = WalletTransaction(
+            wallet_id=user_wallet.id,
+            transaction_type='debit',
+            amount_paise=amount_paise,
+            currency=user_wallet.currency,
+            status='completed',
+            notes={**notes, 'reference': reference or 'mentor_payment', 'mentor_id': mentor_id_int},
+            closing_balance_paise=user_wallet.balance_paise
+        )
+        session.add(user_debit_transaction)
+
+        # Credit to mentor wallet
+        mentor_wallet.balance_paise += amount_paise
+        mentor_credit_transaction = WalletTransaction(
+            wallet_id=mentor_wallet.id,
+            transaction_type='credit',
+            amount_paise=amount_paise,
+            currency=mentor_wallet.currency,
+            status='completed',
+            notes={**notes, 'reference': reference or 'mentor_payment', 'user_id': user_id_int},
+            closing_balance_paise=mentor_wallet.balance_paise
+        )
+        session.add(mentor_credit_transaction)
+
+        session.commit()
+        session.refresh(user_wallet)
+        session.refresh(mentor_wallet)
+        session.refresh(user_debit_transaction)
+        session.refresh(mentor_credit_transaction)
+
+        response = {
+            'message': 'Payment to mentor successful',
+            'user_wallet': serialize_wallet(user_wallet),
+            'mentor_wallet': serialize_wallet(mentor_wallet),
+            'debit_transaction': serialize_wallet_transaction(user_debit_transaction),
+            'credit_transaction': serialize_wallet_transaction(mentor_credit_transaction),
+            'amount_paid': paise_to_rupees(amount_paise)
+        }
+        session.close()
+        return jsonify(response), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/wallet/transfer', methods=['POST'])
+@jwt_required()
+def wallet_transfer():
+    """
+    Transfer money between wallets (user to user, mentor to mentor, etc.)
+    This is a general transfer endpoint for any wallet-to-wallet transfer.
+    """
+    identity = get_jwt_identity()
+    data = request.get_json() or {}
+    from_owner_type = data.get('from_owner_type')
+    from_owner_id = data.get('from_owner_id')
+    to_owner_type = data.get('to_owner_type')
+    to_owner_id = data.get('to_owner_id')
+    amount = data.get('amount')
+    notes = data.get('notes') or {}
+    reference = data.get('reference')
+
+    if not all([from_owner_type, from_owner_id, to_owner_type, to_owner_id, amount]):
+        return jsonify({'error': 'from_owner_type, from_owner_id, to_owner_type, to_owner_id, and amount are required'}), 400
+
+    if from_owner_type not in VALID_WALLET_OWNER_TYPES or to_owner_type not in VALID_WALLET_OWNER_TYPES:
+        return jsonify({'error': 'Invalid owner_type. Must be "user" or "mentor"'}), 400
+
+    try:
+        from_owner_id_int = int(from_owner_id)
+        to_owner_id_int = int(to_owner_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'owner_ids must be integers'}), 400
+
+    if from_owner_type == to_owner_type and from_owner_id_int == to_owner_id_int:
+        return jsonify({'error': 'Cannot transfer to the same wallet'}), 400
+
+    if not isinstance(notes, dict):
+        notes = {'info': str(notes)}
+
+    session = Session()
+    try:
+        # Verify sender has access to their wallet
+        _owner, _, _, error_response = ensure_wallet_access(session, identity, from_owner_type, from_owner_id_int)
+        if error_response:
+            session.close()
+            return error_response
+
+        # Get sender wallet
+        from_wallet = session.query(Wallet).filter_by(owner_type=from_owner_type, owner_id=from_owner_id_int).first()
+        if not from_wallet:
+            session.close()
+            return jsonify({'error': 'Sender wallet not found. Please initialize wallet first.'}), 404
+
+        # Get or create receiver wallet
+        to_wallet = get_or_create_wallet(session, to_owner_type, to_owner_id_int)
+        session.flush()
+
+        # Convert amount to paise
+        try:
+            amount_paise = rupees_to_paise(amount)
+        except ValueError as ve:
+            session.close()
+            return jsonify({'error': str(ve)}), 400
+
+        # Check if sender has sufficient balance
+        if from_wallet.balance_paise < amount_paise:
+            session.close()
+            return jsonify({
+                'error': 'Insufficient wallet balance',
+                'current_balance': paise_to_rupees(from_wallet.balance_paise),
+                'required_amount': paise_to_rupees(amount_paise)
+            }), 400
+
+        # Debit from sender wallet
+        from_wallet.balance_paise -= amount_paise
+        from_debit_transaction = WalletTransaction(
+            wallet_id=from_wallet.id,
+            transaction_type='debit',
+            amount_paise=amount_paise,
+            currency=from_wallet.currency,
+            status='completed',
+            notes={**notes, 'reference': reference or 'wallet_transfer', 'to_owner_type': to_owner_type, 'to_owner_id': to_owner_id_int},
+            closing_balance_paise=from_wallet.balance_paise
+        )
+        session.add(from_debit_transaction)
+
+        # Credit to receiver wallet
+        to_wallet.balance_paise += amount_paise
+        to_credit_transaction = WalletTransaction(
+            wallet_id=to_wallet.id,
+            transaction_type='credit',
+            amount_paise=amount_paise,
+            currency=to_wallet.currency,
+            status='completed',
+            notes={**notes, 'reference': reference or 'wallet_transfer', 'from_owner_type': from_owner_type, 'from_owner_id': from_owner_id_int},
+            closing_balance_paise=to_wallet.balance_paise
+        )
+        session.add(to_credit_transaction)
+
+        session.commit()
+        session.refresh(from_wallet)
+        session.refresh(to_wallet)
+        session.refresh(from_debit_transaction)
+        session.refresh(to_credit_transaction)
+
+        response = {
+            'message': 'Transfer successful',
+            'from_wallet': serialize_wallet(from_wallet),
+            'to_wallet': serialize_wallet(to_wallet),
+            'debit_transaction': serialize_wallet_transaction(from_debit_transaction),
+            'credit_transaction': serialize_wallet_transaction(to_credit_transaction),
+            'amount_transferred': paise_to_rupees(amount_paise)
+        }
+        session.close()
+        return jsonify(response), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/wallet/transactions', methods=['GET'])
 @jwt_required()
 def wallet_transactions():
@@ -3602,7 +3850,6 @@ def get_milestone():
     try:
         mentor_id = request.args.get('mentor_id')
         user_id = request.args.get('user_id')
-        history = request.args.get('history', default='0')
         
         if not mentor_id or not user_id:
             return jsonify({"error": "mentor_id and user_id are required"}), 400
@@ -3618,27 +3865,19 @@ def get_milestone():
         # Get milestone list
         milestone_list = milestone_entry.milestone or []
 
-        # Default: latest milestone object
-        latest_milestone = milestone_list[-1] if isinstance(milestone_list, list) and milestone_list else {}
-
         history_count = len(milestone_list)
 
-        # Prepare response
+        # Prepare response with all milestones
         milestone_data = {
             "serial_number": milestone_entry.serial_number,
             "user_id": milestone_entry.user_id,
             "mentor_id": milestone_entry.mentor_id,
-            "latest_milestone": latest_milestone,
+            "milestones": milestone_list,
             "check_id": milestone_entry.check_id,
             "check_meeting_id": milestone_entry.check_meeting_id,
             "created_at": milestone_entry.created_at,
-            "history_count":history_count
+            "history_count": history_count
         }
-
-        # If history=1, include full milestone list and count
-        if history == '1':
-            milestone_data["milestone_history"] = milestone_list
-            milestone_data["history_count"] = len(milestone_list)
 
         return jsonify(milestone_data), 200
 
@@ -4220,6 +4459,12 @@ def add_new_mentor():
         )
        
         session.add(new_mentor)
+        session.flush()  # Flush to get the mentor_id
+        
+        # Automatically create wallet for the new mentor
+        mentor_wallet = Wallet(owner_type='mentor', owner_id=new_mentor.mentor_id)
+        session.add(mentor_wallet)
+        
         session.commit()
         return jsonify({
             'message': 'New mentor added successfully', 
