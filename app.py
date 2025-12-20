@@ -4878,6 +4878,23 @@ def recommend_mentors():
     session = Session()
 
     try:
+        user = session.query(User).filter_by(username=current_user_email).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Fetch all intents for this user
+        user_intents = session.query(Intent).filter_by(emailid=current_user_email).all()
+        # print("cheking-->",user_intents)
+        intent_map = {
+            intent.mentor_id: {
+                'id': intent.id,
+                'area_exploring': intent.area_exploring,
+                'goal_challenge': intent.goal_challenge,
+                'support_types': intent.support_types,
+                'created_at': intent.created_at.isoformat() if intent.created_at else None
+            } for intent in user_intents
+        }
+
         # If query param allmentor=true, return all mentors without fuzzy filtering
         allmentor_flag = (request.args.get('allmentor', '') or '').strip().lower()
         if allmentor_flag in ('true', '1', 'yes'):            
@@ -4898,14 +4915,23 @@ def recommend_mentors():
                     'resume': m.resume,
                     'availability': m.availability,
                     'created_at': m.created_at,
-                    'intent_price': m.intent_price
+                    'intent_price': m.intent_price,
+                    'intent': intent_map.get(m.mentor_id)
                 } for m in recommended_mentors
             ]
             return jsonify({'recommended_mentors': mentor_data}), 200
 
-        user = session.query(User).filter_by(username=current_user_email).first()
-        if not user:
-            return jsonify({'error': 'User not found'}), 404
+        # Fetch all intents for this user
+        # user_intents = session.query(Intent).filter_by(user_id=user.id).all()
+        # intent_map = {
+        #     intent.mentor_id: {
+        #         'id': intent.id,
+        #         'area_exploring': intent.area_exploring,
+        #         'goal_challenge': intent.goal_challenge,
+        #         'support_types': intent.support_types,
+        #         'created_at': intent.created_at.isoformat() if intent.created_at else None
+        #     } for intent in user_intents
+        # }
 
         basic_info = session.query(BasicInfo).filter_by(emailid=current_user_email).first()
         if not basic_info:
@@ -4946,7 +4972,9 @@ def recommend_mentors():
                 'resume': m.resume,
                 'availability': m.availability,
                 'created_at': m.created_at,
-                'intent_price': m.intent_price
+                'created_at': m.created_at,
+                'intent_price': m.intent_price,
+                'intent': intent_map.get(m.mentor_id)  # Add intent data if exists, else None
             } for m in recommended_mentors
         ]
 
@@ -5366,6 +5394,8 @@ def update_basic_info():
                 return jsonify({'error': str(intent_error)}), 400
         if 'bachelor' in data:
             user_info.bachelor = data['bachelor']
+        if 'work_experience' in data:
+            user_info.work_experience = data['work_experience']
 
         # Commit changes
         session.commit()
