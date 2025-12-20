@@ -4882,18 +4882,6 @@ def recommend_mentors():
         if not user:
             return jsonify({'error': 'User not found'}), 404
 
-        # Fetch all intents for this user
-        user_intents = session.query(Intent).filter_by(emailid=current_user_email).all()
-        # print("cheking-->",user_intents)
-        intent_map = {
-            intent.mentor_id: {
-                'id': intent.id,
-                'area_exploring': intent.area_exploring,
-                'goal_challenge': intent.goal_challenge,
-                'support_types': intent.support_types,
-                'created_at': intent.created_at.isoformat() if intent.created_at else None
-            } for intent in user_intents
-        }
 
         # If query param allmentor=true, return all mentors without fuzzy filtering
         allmentor_flag = (request.args.get('allmentor', '') or '').strip().lower()
@@ -4915,8 +4903,7 @@ def recommend_mentors():
                     'resume': m.resume,
                     'availability': m.availability,
                     'created_at': m.created_at,
-                    'intent_price': m.intent_price,
-                    'intent': intent_map.get(m.mentor_id)
+                    'intent_price': m.intent_price
                 } for m in recommended_mentors
             ]
             return jsonify({'recommended_mentors': mentor_data}), 200
@@ -4973,8 +4960,7 @@ def recommend_mentors():
                 'availability': m.availability,
                 'created_at': m.created_at,
                 'created_at': m.created_at,
-                'intent_price': m.intent_price,
-                'intent': intent_map.get(m.mentor_id)  # Add intent data if exists, else None
+                'intent_price': m.intent_price
             } for m in recommended_mentors
         ]
 
