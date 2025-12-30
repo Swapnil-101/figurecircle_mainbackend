@@ -32,6 +32,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import PickleType
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from uuid import uuid4
+from random import randint
 
 CALENDLY_API_KEY = '5LMFYDPIVF5ADVOCQYFW437GGWJZOSDT'
 
@@ -451,6 +452,16 @@ class MeetingNotification(Base):
     read_at = Column(DateTime, nullable=True)  # When notification was read
     notification_data = Column(JSON, nullable=True)  # Additional data like sender info for messages
 
+class OTP(Base):
+    __tablename__ = 'otps'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False)
+    otp = Column(String(6), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    is_verified = Column(Boolean, default=False)
+
     
 Session = sessionmaker(bind=engine)
 
@@ -607,6 +618,62 @@ jwt = JWTManager(app)
 client = WebApplicationClient(app.config['GOOGLE_CLIENT_ID'])
 
 
+def generate_otp():
+    return str(randint(100000, 999999))
+
+def send_otp_email(email, otp):
+    msg = Message('Your OTP for FigureCircle', sender='figurecircle2024@gmail.com', recipients=[email])
+    msg.body = f'Your OTP is {otp}. It is valid for 10 minutes.'
+    mail.send(msg)
+
+@app.route('/send_otp', methods=['POST'])
+def send_otp():
+    data = request.get_json()
+    email = data.get('email')
+    request_type = data.get('type') # 'register' or 'forgot'
+
+    if not email or not request_type:
+        return jsonify({"message": "Missing email or type"}), 400
+
+    session = Session()
+    
+    user = session.query(User).filter_by(username=email).first()
+    
+    if request_type == 'register':
+        if user:
+            session.close()
+            return jsonify({"message": "User already exists"}), 400
+    elif request_type == 'forgot':
+        if not user:
+            session.close()
+            return jsonify({"message": "User not found"}), 404
+    else:
+        session.close()
+        return jsonify({"message": "Invalid type"}), 400
+
+    otp = generate_otp()
+    expires_at = datetime.utcnow() + timedelta(minutes=10)
+    
+    # Check if an active OTP already exists for this email, invalidate it or update it
+    existing_otp = session.query(OTP).filter_by(email=email).first()
+    if existing_otp:
+        existing_otp.otp = otp
+        existing_otp.expires_at = expires_at
+        existing_otp.is_verified = False
+    else:
+        new_otp = OTP(email=email, otp=otp, expires_at=expires_at)
+        session.add(new_otp)
+    
+    try:
+        send_otp_email(email, otp)
+        session.commit()
+        session.close()
+        return jsonify({"message": "OTP sent successfully"}), 200
+    except Exception as e:
+        session.rollback()
+        session.close()
+        return jsonify({"message": f"Failed to send OTP: {str(e)}"}), 500
+
 @app.route('/')
 def home():
     return jsonify({"message": "Welcome to the Recommendation API!"})
@@ -687,11 +754,22 @@ def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
+    otp = data.get('otp')
 
-    if not username or not password:
-        return jsonify({"message": "Missing username or password"}), 400
+    if not username or not password or not otp:
+        return jsonify({"message": "Missing username, password, or OTP"}), 400
 
     session = Session()
+
+    # Verify OTP
+    otp_record = session.query(OTP).filter_by(email=username, otp=otp, is_verified=False).first()
+    if not otp_record:
+        session.close()
+        return jsonify({"message": "Invalid OTP"}), 400
+    
+    if otp_record.expires_at < datetime.utcnow():
+        session.close()
+        return jsonify({"message": "OTP expired"}), 400
 
     # Check if the username already exists
     if session.query(User).filter_by(username=username).first():
@@ -699,7 +777,7 @@ def register():
         return jsonify({"message": "Username already exists"}), 400
 
     # Create a new user
-    hashed_password = generate_password_hash(password)
+    hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
     new_user = User(username=username, password=hashed_password)
     session.add(new_user)
     session.flush()  # Flush to get the user ID
@@ -712,6 +790,10 @@ def register():
     user_wallet = Wallet(owner_type='user', owner_id=new_user.id)
     session.add(user_wallet)
 
+    # Mark OTP as verified
+    otp_record.is_verified = True
+    session.delete(otp_record) # Optional: delete used OTP
+
     session.commit()
     session.close()
 
@@ -719,6 +801,45 @@ def register():
         "message": "User registered successfully",
         "register": True
     }), 201
+
+
+@app.route('/reset_password', methods=['POST'])
+def reset_password():
+    data = request.get_json()
+    email = data.get('email')
+    otp = data.get('otp')
+    new_password = data.get('new_password')
+
+    if not email or not otp or not new_password:
+        return jsonify({"message": "Missing email, OTP, or new password"}), 400
+
+    session = Session()
+
+    # Verify OTP
+    otp_record = session.query(OTP).filter_by(email=email, otp=otp, is_verified=False).first()
+    if not otp_record:
+        session.close()
+        return jsonify({"message": "Invalid OTP"}), 400
+    
+    if otp_record.expires_at < datetime.utcnow():
+        session.close()
+        return jsonify({"message": "OTP expired"}), 400
+
+    user = session.query(User).filter_by(username=email).first()
+    if not user:
+        session.close()
+        return jsonify({"message": "User not found"}), 404
+
+    user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+    
+    # Mark OTP as verified
+    otp_record.is_verified = True
+    session.delete(otp_record) # Optional: delete used OTP
+
+    session.commit()
+    session.close()
+
+    return jsonify({"message": "Password reset successfully"}), 200
 
 
 
@@ -769,7 +890,7 @@ def register_admin():
     if not username or not password:
         return jsonify({"message": "Missing username or password"}), 400
 
-    hashed_password = generate_password_hash(password)
+    hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
     new_admin = Admin(username=username, password=hashed_password)
 
     session = Session()
@@ -1623,8 +1744,29 @@ def get_schedules():
         schedule_query = apply_filters(session.query(Schedule), Schedule)
         trial_query = apply_filters(session.query(TrialSchedule), TrialSchedule)
 
-        schedule_results = [
-            {
+        schedule_results = []
+        for s in schedule_query.all():
+            # Fetch intent for this schedule using user_id and mentor_id
+            intent = session.query(Intent).filter_by(
+                user_id=s.user_id, 
+                mentor_id=s.mentor_id
+            ).first()
+            
+            intent_data = None
+            if intent:
+                intent_data = {
+                    'id': intent.id,
+                    'useruniqid': intent.useruniqid,
+                    'email': intent.email,
+                    'area_exploring': intent.area_exploring,
+                    'goal_challenge': intent.goal_challenge,
+                    'support_types': intent.support_types,
+                    'user_id': intent.user_id,
+                    'mentor_id': intent.mentor_id,
+                    'created_at': intent.created_at.isoformat()
+                }
+            
+            schedule_results.append({
                 "id": s.id,
                 "name": s.name,
                 "email": s.email,
@@ -1638,13 +1780,33 @@ def get_schedules():
                 "user_id": s.user_id,
                 "duration": s.duration,
                 "timezone": s.timezone,
-                "meeting_type": "regular"
-            }
-            for s in schedule_query.all()
-        ]
+                "meeting_type": "regular",
+                "intent": intent_data
+            })
 
-        trial_results = [
-            {
+        trial_results = []
+        for t in trial_query.all():
+            # Fetch intent for this trial schedule using user_id and mentor_id
+            intent = session.query(Intent).filter_by(
+                user_id=t.user_id, 
+                mentor_id=t.mentor_id
+            ).first()
+            
+            intent_data = None
+            if intent:
+                intent_data = {
+                    'id': intent.id,
+                    'useruniqid': intent.useruniqid,
+                    'email': intent.email,
+                    'area_exploring': intent.area_exploring,
+                    'goal_challenge': intent.goal_challenge,
+                    'support_types': intent.support_types,
+                    'user_id': intent.user_id,
+                    'mentor_id': intent.mentor_id,
+                    'created_at': intent.created_at.isoformat()
+                }
+            
+            trial_results.append({
                 "id": t.id,
                 "name": t.name,
                 "email": t.email,
@@ -1658,10 +1820,9 @@ def get_schedules():
                 "user_id": t.user_id,
                 "duration": t.duration,
                 "timezone": t.timezone,
-                "meeting_type": "trial"
-            }
-            for t in trial_query.all()
-        ]
+                "meeting_type": "trial",
+                "intent": intent_data
+            })
 
         combined_results = schedule_results + trial_results
         combined_results.sort(key=lambda item: item["start_datetime"])
@@ -1669,6 +1830,44 @@ def get_schedules():
         return jsonify(combined_results), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+    finally:
+        session.close()
+
+# GET intent by user_id and mentor_id
+@app.route('/api/intentwithids', methods=['GET'])
+def get_intent_by_ids():
+    session = Session()
+    try:
+        user_id = request.args.get('user_id')
+        mentor_id = request.args.get('mentor_id')
+
+        if not user_id or not mentor_id:
+            return jsonify({'error': 'user_id and mentor_id are required'}), 400
+
+        # Query intent by user_id and mentor_id
+        intent = session.query(Intent).filter_by(
+            user_id=int(user_id), 
+            mentor_id=int(mentor_id)
+        ).first()
+
+        if not intent:
+            return jsonify({'error': 'Intent not found'}), 404
+
+        intent_data = {
+            'id': intent.id,
+            'useruniqid': intent.useruniqid,
+            'email': intent.email,
+            'area_exploring': intent.area_exploring,
+            'goal_challenge': intent.goal_challenge,
+            'support_types': intent.support_types,
+            'user_id': intent.user_id,
+            'mentor_id': intent.mentor_id,
+            'created_at': intent.created_at.isoformat()
+        }
+
+        return jsonify(intent_data), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
     finally:
         session.close()
 
@@ -7078,6 +7277,8 @@ def search_categories():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
+Base.metadata.create_all(engine)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
