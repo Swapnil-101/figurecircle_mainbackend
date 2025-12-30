@@ -43,7 +43,14 @@ load_dotenv()
 connection_string = "postgresql://neondb_owner:Pl8cWUu0iLHn@ep-tiny-haze-a1w7wrrg.ap-southeast-1.aws.neon.tech/figure_circle"
 
 
-engine = create_engine(connection_string,connect_args={'connect_timeout': 10})
+engine = create_engine(
+    connection_string,
+    connect_args={'connect_timeout': 10},
+    pool_pre_ping=True,  # Test connections before using them
+    pool_recycle=3600,   # Recycle connections after 1 hour
+    pool_size=10,        # Number of connections to maintain in the pool
+    max_overflow=20      # Maximum number of connections that can be created beyond pool_size
+)
 
 Base = declarative_base()
 
