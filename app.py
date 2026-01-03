@@ -759,24 +759,30 @@ def google_callback():
 @app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
+    # username = data.get('username')
+    # password = data.get('password')
+    # otp = data.get('otp')
+
+    # if not username or not password or not otp:
+    #     return jsonify({"message": "Missing username, password, or OTP"}), 400
+
     username = data.get('username')
     password = data.get('password')
-    otp = data.get('otp')
 
-    if not username or not password or not otp:
-        return jsonify({"message": "Missing username, password, or OTP"}), 400
+    if not username or not password:
+        return jsonify({"message": "Missing username or password"}), 400
 
     session = Session()
 
     # Verify OTP
-    otp_record = session.query(OTP).filter_by(email=username, otp=otp, is_verified=False).first()
-    if not otp_record:
-        session.close()
-        return jsonify({"message": "Invalid OTP"}), 400
+    # otp_record = session.query(OTP).filter_by(email=username, otp=otp, is_verified=False).first()
+    # if not otp_record:
+    #     session.close()
+    #     return jsonify({"message": "Invalid OTP"}), 400
     
-    if otp_record.expires_at < datetime.utcnow():
-        session.close()
-        return jsonify({"message": "OTP expired"}), 400
+    # if otp_record.expires_at < datetime.utcnow():
+    #     session.close()
+    #     return jsonify({"message": "OTP expired"}), 400
 
     # Check if the username already exists
     if session.query(User).filter_by(username=username).first():
@@ -798,8 +804,8 @@ def register():
     session.add(user_wallet)
 
     # Mark OTP as verified
-    otp_record.is_verified = True
-    session.delete(otp_record) # Optional: delete used OTP
+    # otp_record.is_verified = True
+    # session.delete(otp_record) # Optional: delete used OTP
 
     session.commit()
     session.close()
