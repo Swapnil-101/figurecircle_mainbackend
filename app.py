@@ -255,6 +255,17 @@ class UserMentorship(Base):
     check_meeting_id = Column(Integer, nullable=True)  # New field
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class MilestoneHistory(Base):
+    __tablename__ = 'milestone_history'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    serial_number = Column(Integer, nullable=False)  # Reference to UserMentorship
+    user_id = Column(Integer, nullable=False)
+    mentor_id = Column(Integer, nullable=False)
+    milestone_data = Column(JSONB, nullable=False)  # Previous milestone state
+    edited_at = Column(DateTime, default=datetime.utcnow)
+    edited_by = Column(String, nullable=True)  # Username from JWT
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -4062,6 +4073,7 @@ def get_milestone():
     try:
         mentor_id = request.args.get('mentor_id')
         user_id = request.args.get('user_id')
+        include_history = request.args.get('include_history', 'false').lower() == 'true'
         
         if not mentor_id or not user_id:
             return jsonify({"error": "mentor_id and user_id are required"}), 400
@@ -4074,22 +4086,42 @@ def get_milestone():
         if not milestone_entry:
             return jsonify([]), 200
 
-        # Get milestone list
-        milestone_list = milestone_entry.milestone or []
+        # Get current milestone list (latest state)
+        current_milestones = milestone_entry.milestone or []
 
-        history_count = len(milestone_list)
-
-        # Prepare response with all milestones
+        # Prepare response with latest milestone outside
         milestone_data = {
             "serial_number": milestone_entry.serial_number,
             "user_id": milestone_entry.user_id,
             "mentor_id": milestone_entry.mentor_id,
-            "milestones": milestone_list,
+            "current_milestone": current_milestones,  # Latest state
             "check_id": milestone_entry.check_id,
             "check_meeting_id": milestone_entry.check_meeting_id,
             "created_at": milestone_entry.created_at,
-            "history_count": history_count
+            "last_updated": milestone_entry.created_at
         }
+
+        # Include history if requested - all old versions
+        if include_history:
+            history_records = session.query(MilestoneHistory).filter_by(
+                serial_number=milestone_entry.serial_number,
+                user_id=milestone_entry.user_id,
+                mentor_id=milestone_entry.mentor_id
+            ).order_by(MilestoneHistory.edited_at.desc()).all()
+
+            # Put all old versions in history array
+            milestone_data["history"] = [
+                {
+                    "id": record.id,
+                    "milestone_state": record.milestone_data,  # Old state
+                    "edited_at": record.edited_at,
+                    "edited_by": record.edited_by
+                }
+                for record in history_records
+            ]
+            milestone_data["history_count"] = len(history_records)
+        else:
+            milestone_data["history_count"] = 0
 
         return jsonify(milestone_data), 200
 
@@ -4170,6 +4202,7 @@ def get_milestone_by_check_meeting():
 def update_milestone():
     session = Session()
     try:
+        current_user = get_jwt_identity()
         data = request.get_json()
         serial_number = data.get('serial_number')
         mentor_id = data.get('mentor_id')
@@ -4187,6 +4220,17 @@ def update_milestone():
 
         if not milestone_entry:
             return jsonify({"error": "No milestone found for the given serial_number, mentor_id, and user_id"}), 404
+
+        # Save current state to history before editing
+        import copy
+        history_record = MilestoneHistory(
+            serial_number=milestone_entry.serial_number,
+            user_id=milestone_entry.user_id,
+            mentor_id=milestone_entry.mentor_id,
+            milestone_data=copy.deepcopy(milestone_entry.milestone) if milestone_entry.milestone else [],
+            edited_by=current_user
+        )
+        session.add(history_record)
 
         # Defensive: ensure milestone is a list
         if milestone_entry.milestone is None:
@@ -4210,7 +4254,7 @@ def update_milestone():
             milestone_entry.check_meeting_id = data['check_meeting_id']
 
         session.commit()
-        return jsonify({"message": "Milestone appended successfully"}), 200
+        return jsonify({"message": "Milestone appended successfully", "history_saved": True}), 200
 
     except Exception as e:
         session.rollback()
@@ -4219,6 +4263,87 @@ def update_milestone():
         session.close()
 
 
+# edit specific milestone item
+@app.route('/api/milestone', methods=['PATCH'])
+@jwt_required()
+def edit_milestone_item():
+    session = Session()
+    try:
+        current_user = get_jwt_identity()
+        data = request.get_json()
+        serial_number = data.get('serial_number')
+        mentor_id = data.get('mentor_id')
+        user_id = data.get('user_id')
+        milestone_index = data.get('milestone_index')  # Index of milestone to edit
+        updated_milestone = data.get('milestone')  # New milestone data
+
+        if not all([serial_number, mentor_id, user_id, milestone_index is not None, updated_milestone]):
+            return jsonify({"error": "serial_number, mentor_id, user_id, milestone_index, and milestone are required"}), 400
+
+        milestone_entry = session.query(UserMentorship).filter_by(
+            serial_number=serial_number,
+            mentor_id=mentor_id,
+            user_id=user_id
+        ).first()
+
+        if not milestone_entry:
+            return jsonify({"error": "No milestone found for the given serial_number, mentor_id, and user_id"}), 404
+
+        # Ensure milestone is a list
+        current_milestones = milestone_entry.milestone
+        if current_milestones is None:
+            current_milestones = []
+        elif isinstance(current_milestones, str):
+            try:
+                current_milestones = json.loads(current_milestones)
+            except Exception:
+                current_milestones = []
+        elif not isinstance(current_milestones, list):
+            current_milestones = [current_milestones]
+
+        # Validate index
+        if milestone_index < 0 or milestone_index >= len(current_milestones):
+            return jsonify({"error": f"Invalid milestone_index. Must be between 0 and {len(current_milestones) - 1}"}), 400
+
+        # Save current state to history before editing
+        import copy
+        history_record = MilestoneHistory(
+            serial_number=milestone_entry.serial_number,
+            user_id=milestone_entry.user_id,
+            mentor_id=milestone_entry.mentor_id,
+            milestone_data=copy.deepcopy(current_milestones),
+            edited_by=current_user
+        )
+        session.add(history_record)
+
+        # Create a new list with the updated milestone
+        updated_milestones = current_milestones.copy()
+        updated_milestones[milestone_index] = updated_milestone
+        
+        # Assign the updated list back to the milestone field
+        milestone_entry.milestone = updated_milestones
+        flag_modified(milestone_entry, "milestone")
+
+        # Update other fields if provided
+        if 'check_id' in data:
+            milestone_entry.check_id = data['check_id']
+        if 'check_meeting_id' in data:
+            milestone_entry.check_meeting_id = data['check_meeting_id']
+
+        session.commit()
+        
+        return jsonify({
+            "message": "Milestone updated successfully",
+            "history_saved": True,
+            "updated_index": milestone_index,
+            "updated_milestone": updated_milestone
+        }), 200
+
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
 
 
 # milestone check in meeting
