@@ -266,6 +266,13 @@ class MilestoneHistory(Base):
     edited_at = Column(DateTime, default=datetime.utcnow)
     edited_by = Column(String, nullable=True)  # Username from JWT
 
+class MeetingHost(Base):
+    __tablename__ = 'meeting_hosts'
+
+    room_id = Column(String(50), primary_key=True)
+    host_peer_id = Column(String(100), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -7415,6 +7422,95 @@ def search_categories():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
+
+# Meeting Host APIs
+@app.route('/meeting-host/<room_id>', methods=['GET'])
+def get_meeting_host(room_id):
+    """Get the host peer ID for a room"""
+    session = Session()
+    try:
+        meeting_host = session.query(MeetingHost).filter_by(room_id=room_id).first()
+        
+        if meeting_host:
+            return jsonify({
+                "hostPeerId": meeting_host.host_peer_id
+            }), 200
+        else:
+            return jsonify({
+                "hostPeerId": None
+            }), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route('/meeting-host', methods=['POST'])
+def create_meeting_host():
+    """Create or update meeting host record"""
+    session = Session()
+    try:
+        data = request.get_json()
+        room_id = data.get('roomId')
+        host_peer_id = data.get('hostPeerId')
+        
+        if not room_id or not host_peer_id:
+            return jsonify({"error": "roomId and hostPeerId are required"}), 400
+        
+        # Check if host already exists
+        existing_host = session.query(MeetingHost).filter_by(room_id=room_id).first()
+        
+        if existing_host:
+            # Update existing host
+            existing_host.host_peer_id = host_peer_id
+            existing_host.created_at = datetime.utcnow()
+        else:
+            # Create new host record
+            new_host = MeetingHost(
+                room_id=room_id,
+                host_peer_id=host_peer_id
+            )
+            session.add(new_host)
+        
+        session.commit()
+        return jsonify({
+            "message": "Meeting host created/updated successfully",
+            "roomId": room_id,
+            "hostPeerId": host_peer_id
+        }), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
+
+@app.route('/meeting-host/<room_id>', methods=['DELETE'])
+def delete_meeting_host(room_id):
+    """Delete meeting host record when host leaves"""
+    session = Session()
+    try:
+        meeting_host = session.query(MeetingHost).filter_by(room_id=room_id).first()
+        
+        if meeting_host:
+            session.delete(meeting_host)
+            session.commit()
+            return jsonify({
+                "message": "Meeting host removed successfully",
+                "roomId": room_id
+            }), 200
+        else:
+            return jsonify({
+                "message": "No host found for this room",
+                "roomId": room_id
+            }), 404
+    except Exception as e:
+        session.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        session.close()
+
 
 Base.metadata.create_all(engine)
 
