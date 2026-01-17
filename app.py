@@ -1995,7 +1995,13 @@ def get_schedule_by_link():
     if not link:
         return jsonify({"error": "link is required"}), 400
 
+    # First, try to find in regular Schedule table
     schedule = session.query(Schedule).filter_by(link=link).first()
+    
+    # If not found in Schedule, try TrialSchedule table
+    if not schedule:
+        schedule = session.query(TrialSchedule).filter_by(link=link).first()
+    
     session.close()
 
     if not schedule:
@@ -6418,7 +6424,7 @@ def validate_category_type(category_type):
 
 @app.route('/api/education', methods=['GET'])
 def get_education_list():
-    """Get all education categories"""
+    """Get all education categories (deduplicated by name)"""
     session = Session()
     try:
         education_list = session.query(Category).filter_by(
@@ -6426,16 +6432,23 @@ def get_education_list():
             is_active=True
         ).order_by(Category.name).all()
         
-        result = [
-            {
-                'id': edu.id,
-                'name': edu.name,
-                'description': edu.description,
-                'created_at': edu.created_at.isoformat() if edu.created_at else None,
-                'updated_at': edu.updated_at.isoformat() if edu.updated_at else None
-            }
-            for edu in education_list
-        ]
+        # Deduplicate by name - keep first occurrence
+        seen_names = set()
+        result = []
+        
+        for edu in education_list:
+            # Normalize name for comparison (case-insensitive, strip whitespace)
+            normalized_name = edu.name.strip().lower()
+            
+            if normalized_name not in seen_names:
+                seen_names.add(normalized_name)
+                result.append({
+                    'id': edu.id,
+                    'name': edu.name,
+                    'description': edu.description,
+                    'created_at': edu.created_at.isoformat() if edu.created_at else None,
+                    'updated_at': edu.updated_at.isoformat() if edu.updated_at else None
+                })
         
         return jsonify({'education': result}), 200
     except Exception as e:
@@ -6597,7 +6610,7 @@ def delete_education(education_id):
 
 @app.route('/api/industry', methods=['GET'])
 def get_industry_list():
-    """Get all industry categories"""
+    """Get all industry categories (deduplicated by name)"""
     session = Session()
     try:
         industry_list = session.query(Category).filter_by(
@@ -6605,16 +6618,23 @@ def get_industry_list():
             is_active=True
         ).order_by(Category.name).all()
         
-        result = [
-            {
-                'id': ind.id,
-                'name': ind.name,
-                'description': ind.description,
-                'created_at': ind.created_at.isoformat() if ind.created_at else None,
-                'updated_at': ind.updated_at.isoformat() if ind.updated_at else None
-            }
-            for ind in industry_list
-        ]
+        # Deduplicate by name - keep first occurrence
+        seen_names = set()
+        result = []
+        
+        for ind in industry_list:
+            # Normalize name for comparison (case-insensitive, strip whitespace)
+            normalized_name = ind.name.strip().lower()
+            
+            if normalized_name not in seen_names:
+                seen_names.add(normalized_name)
+                result.append({
+                    'id': ind.id,
+                    'name': ind.name,
+                    'description': ind.description,
+                    'created_at': ind.created_at.isoformat() if ind.created_at else None,
+                    'updated_at': ind.updated_at.isoformat() if ind.updated_at else None
+                })
         
         return jsonify({'industry': result}), 200
     except Exception as e:
