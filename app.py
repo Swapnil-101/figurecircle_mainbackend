@@ -1909,7 +1909,13 @@ def get_schedule(schedule_id):
     session = Session()
     
     # Search for the schedule where the link contains "/v2/meetingcall/<schedule_id>"
+    # First, try to find in regular Schedule table
     schedule = session.query(Schedule).filter(Schedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
+    
+    # If not found in Schedule, try TrialSchedule table
+    if not schedule:
+        schedule = session.query(TrialSchedule).filter(TrialSchedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
+    
     session.close()
     
     print("checking--->",schedule)
@@ -1951,7 +1957,14 @@ def get_schedule(schedule_id):
 @app.route('/api/milestonevalidMeeting/<int:schedule_id>', methods=['GET'])
 def get_schedule_milestone(schedule_id):
     session = Session()
+    
+    # First, try to find in regular Schedule table
     schedule = session.query(Schedule).filter(Schedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
+    
+    # If not found in Schedule, try TrialSchedule table
+    if not schedule:
+        schedule = session.query(TrialSchedule).filter(TrialSchedule.link.contains(f"/v2/meetingcall/{schedule_id}")).first()
+    
     session.close()
 
     if not schedule:
@@ -7448,7 +7461,7 @@ def get_meeting_host(room_id):
 
 @app.route('/meeting-host', methods=['POST'])
 def create_meeting_host():
-    """Create or update meeting host record"""
+    """Create meeting host record - only if no host exists"""
     session = Session()
     try:
         data = request.get_json()
@@ -7462,23 +7475,25 @@ def create_meeting_host():
         existing_host = session.query(MeetingHost).filter_by(room_id=room_id).first()
         
         if existing_host:
-            # Update existing host
-            existing_host.host_peer_id = host_peer_id
-            existing_host.created_at = datetime.utcnow()
+            # Host already exists - reject registration
+            return jsonify({
+                "error": "Host already exists for this room",
+                "existingHostPeerId": existing_host.host_peer_id
+            }), 409  # 409 Conflict
         else:
-            # Create new host record
+            # No host exists - create new host record
             new_host = MeetingHost(
                 room_id=room_id,
                 host_peer_id=host_peer_id
             )
             session.add(new_host)
-        
-        session.commit()
-        return jsonify({
-            "message": "Meeting host created/updated successfully",
-            "roomId": room_id,
-            "hostPeerId": host_peer_id
-        }), 200
+            session.commit()
+            
+            return jsonify({
+                "message": "Meeting host registered successfully",
+                "roomId": room_id,
+                "hostPeerId": host_peer_id
+            }), 201  # 201 Created
     except Exception as e:
         session.rollback()
         return jsonify({"error": str(e)}), 500
