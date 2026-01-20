@@ -1923,24 +1923,36 @@ def get_schedules():
             return payload if has_value else None
 
         def build_intent_data(schedule_user_id, schedule_mentor_id):
-            intent = session.query(Intent).filter_by(
-                user_id=schedule_user_id,
-                mentor_id=schedule_mentor_id
-            ).first()
-
-            if not intent:
-                return None
-
-            user_profile = session.query(BasicInfo).filter_by(
-                useruniqid=str(schedule_user_id)
-            ).first()
-
             user_account = session.query(User).filter_by(id=schedule_user_id).first()
+            user_email = user_account.username if user_account else None
             user_details = None
             if user_account:
                 user_details = session.query(UserDetails).filter_by(
                     username=user_account.username
                 ).first()
+
+            user_profile = None
+            if user_email:
+                user_profile = session.query(BasicInfo).filter(
+                    or_(BasicInfo.emailid == user_email, BasicInfo.useruniqid == user_email)
+                ).first()
+            if not user_profile:
+                user_profile = session.query(BasicInfo).filter_by(
+                    useruniqid=str(schedule_user_id)
+                ).first()
+
+            intent = session.query(Intent).filter_by(
+                user_id=schedule_user_id,
+                mentor_id=schedule_mentor_id
+            ).first()
+
+            intent_email = None
+            if intent and intent.email:
+                intent_email = intent.email
+            elif user_profile and user_profile.emailid:
+                intent_email = user_profile.emailid
+            else:
+                intent_email = user_email
 
             user_profile_data = None
             if user_profile:
@@ -1973,7 +1985,7 @@ def get_schedules():
             user_info_data = _compact_payload({
                 'user_id': schedule_user_id,
                 'username': user_account.username if user_account else None,
-                'email': intent.email,
+                'email': intent_email,
                 'first_name': first_name,
                 'last_name': last_name,
                 'country': user_details.country if user_details else None
@@ -1998,15 +2010,16 @@ def get_schedules():
             })
 
             return {
-                'id': intent.id,
-                'useruniqid': intent.useruniqid,
-                'email': intent.email,
-                'area_exploring': intent.area_exploring,
-                'goal_challenge': intent.goal_challenge,
-                'support_types': intent.support_types,
-                'user_id': intent.user_id,
-                'mentor_id': intent.mentor_id,
-                'created_at': intent.created_at.isoformat(),
+                'id': intent.id if intent else None,
+                'useruniqid': intent.useruniqid if intent else (user_profile.useruniqid if user_profile else None),
+                'email': intent_email,
+                'area_exploring': intent.area_exploring if intent else None,
+                'goal_challenge': intent.goal_challenge if intent else None,
+                'support_types': intent.support_types if intent else None,
+                'user_id': intent.user_id if intent else schedule_user_id,
+                'mentor_id': intent.mentor_id if intent else schedule_mentor_id,
+                'created_at': intent.created_at.isoformat() if intent and intent.created_at else None,
+                'has_intent': bool(intent),
                 'user_info': user_info_data,
                 'user_profile': user_profile_data,
                 'user_education': user_education_data,
