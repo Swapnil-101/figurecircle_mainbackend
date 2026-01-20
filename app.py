@@ -7749,7 +7749,7 @@ def delete_meeting_host(room_id):
             return jsonify({
                 "message": "Meeting host removed successfully",
                 "roomId": room_id
-            }), 200 
+            }), 200
         else:
             return jsonify({
                 "message": "No host found for this room",
