@@ -1288,47 +1288,188 @@ def search_degree():
 
 @app.route('/dream-list', methods=['GET'])
 def dream_list():
-    query = request.args.get('degree', '').strip().lower()
+    degree_query = request.args.get('degree', '').strip().lower()
+    education_filter = request.args.get('education', '').strip().lower()
+    stream_filter = request.args.get('stream', '').strip().lower()
+    experience_filter = request.args.get('experience', '').strip().lower()
+    industry_filter = request.args.get('industry', '').strip().lower()
 
-    if not query:
+    if not degree_query and education_filter:
+        degree_query = education_filter
+
+    if not degree_query:
         return jsonify({"error": "Please provide a degree name"}), 400
 
     session = Session()
+
+    def split_csv(value):
+        if not value:
+            return []
+        return [item.strip() for item in value.split(',') if item.strip()]
+
+    def education_matches(entry, term):
+        if not term:
+            return False
+        term = term.lower()
+        bachelors = (entry.bachelors_degree or '').strip().lower()
+        masters = (entry.masters_degree or '').strip().lower()
+        return term in bachelors or term in masters
+
+    def entry_text(entry):
+        parts = [
+            entry.role,
+            entry.stream,
+            entry.bachelors_degree,
+            entry.masters_degree,
+            entry.certifications,
+            entry.competitions,
+            entry.courses
+        ]
+        return " ".join([part for part in parts if part]).lower()
+
+    def build_match_payload(entry, match_type, base_score, confidence):
+        if stream_filter and (entry.stream or '').strip().lower() != stream_filter:
+            return None
+
+        blob = entry_text(entry)
+        education_match = None
+        if education_filter:
+            education_match = education_matches(entry, education_filter)
+            if not education_match:
+                return None
+
+        industry_match = None
+        if industry_filter:
+            industry_match = industry_filter in blob
+
+        experience_match = None
+        if experience_filter:
+            experience_match = experience_filter in blob
+
+        degree_match = education_matches(entry, degree_query)
+
+        score = base_score
+        reasons = []
+        if stream_filter:
+            score += 5
+            reasons.append("stream_match")
+        if education_match:
+            score += 5
+            reasons.append("education_match")
+        if degree_match:
+            score += 5
+            reasons.append("degree_match")
+        if industry_match:
+            score += 3
+            reasons.append("industry_match")
+        if experience_match:
+            score += 3
+            reasons.append("experience_match")
+        if degree_query and degree_query in blob and "degree_match" not in reasons:
+            score += 2
+            reasons.append("degree_term_match")
+
+        return {
+            "matched_role": entry.role,
+            "stream": entry.stream,
+            "bachelors_degree": entry.bachelors_degree,
+            "masters_degree": entry.masters_degree,
+            "certifications": split_csv(entry.certifications),
+            "competitions": split_csv(entry.competitions),
+            "courses": split_csv(entry.courses),
+            "match_type": match_type,
+            "confidence": confidence,
+            "recommendation_score": score,
+            "match_reasons": reasons,
+            "industry_match": industry_match,
+            "experience_match": experience_match,
+            "education_match": education_match,
+            "degree_match": degree_match
+        }
 
     # Fetch all education entries
     education_entries = session.query(education).all()
 
     # Create a map of role -> entry
-    role_map = {entry.role.strip().lower(): entry for entry in education_entries}
+    role_map = {
+        entry.role.strip().lower(): entry
+        for entry in education_entries
+        if entry.role
+    }
 
-    matched_roles = []
+    matched_roles_map = {}
+
+    def upsert_match(entry, match_type, base_score, confidence):
+        payload = build_match_payload(entry, match_type, base_score, confidence)
+        if not payload:
+            return
+        role_key = (entry.role or '').strip().lower()
+        existing = matched_roles_map.get(role_key)
+        if not existing or payload["recommendation_score"] > existing["recommendation_score"]:
+            matched_roles_map[role_key] = payload
 
     # If exact match exists, include it first
-    if query in role_map:
-        exact_edu = role_map[query]
-        matched_roles.append({
-            "matched_role": exact_edu.role,
-            "match_type": "exact",
-            "confidence": 100
-        })
+    if degree_query in role_map:
+        exact_edu = role_map[degree_query]
+        upsert_match(exact_edu, "exact", 100, 100)
         # Add all fuzzy matches excluding the exact match
-        candidates = [role for role in role_map.keys() if role != query]
-        fuzzy_matches = process.extract(query, candidates, limit=None)
+        candidates = [role for role in role_map.keys() if role != degree_query]
+        fuzzy_matches = process.extract(degree_query, candidates, limit=None)
     else:
         # No exact match; get all fuzzy matches
-        fuzzy_matches = process.extract(query, role_map.keys(), limit=None)
+        fuzzy_matches = process.extract(degree_query, role_map.keys(), limit=None)
 
     # Append fuzzy matches
     for best_match, score in (fuzzy_matches or []):
         edu = role_map[best_match]
-        matched_roles.append({
-            "matched_role": edu.role,
-            "match_type": "fuzzy",
-            "confidence": score
-        })
+        upsert_match(edu, "fuzzy", score, score)
+
+    # Also search in bachelors_degree and masters_degree fields
+    for entry in education_entries:
+        # Check if degree_query matches bachelor's or master's degree
+        if education_matches(entry, degree_query):
+            upsert_match(entry, "degree_match", 85, 85)
+
+    matched_roles = list(matched_roles_map.values())
+    matched_roles.sort(
+        key=lambda item: (item.get("recommendation_score", 0), item.get("confidence", 0)),
+        reverse=True
+    )
+
+    degree_recommendations = None
+    if degree_data:
+        degree_record = degree_data.get(degree_query)
+        degree_match_type = None
+        degree_confidence = None
+        matched_degree_name = None
+        if degree_record:
+            degree_match_type = "exact"
+            degree_confidence = 100
+        else:
+            best_match = process.extractOne(degree_query, degree_data.keys())
+            if best_match:
+                matched_degree_name, degree_confidence = best_match
+                if degree_confidence >= 70:
+                    degree_record = degree_data[matched_degree_name]
+                    degree_match_type = "fuzzy"
+
+        if degree_record and degree_match_type:
+            degree_recommendations = {
+                "name": degree_record.name,
+                "courses": split_csv(degree_record.courses),
+                "competitions": split_csv(degree_record.competitions),
+                "certifications": split_csv(degree_record.certifications),
+                "match_type": degree_match_type,
+                "confidence": degree_confidence
+            }
+            if matched_degree_name and degree_match_type == "fuzzy":
+                degree_recommendations["matched_degree"] = matched_degree_name
 
     if matched_roles:
-        return jsonify({"matched_roles": matched_roles}), 200
+        response = {"matched_roles": matched_roles}
+        if degree_recommendations:
+            response["degree_recommendations"] = degree_recommendations
+        return jsonify(response), 200
 
     # Fallback - shouldn't be needed due to "always return" logic
     return jsonify({"error": "No relevant role found"}), 404
@@ -1775,27 +1916,106 @@ def get_schedules():
         schedule_query = apply_filters(session.query(Schedule), Schedule)
         trial_query = apply_filters(session.query(TrialSchedule), TrialSchedule)
 
+        def _compact_payload(payload):
+            if not payload:
+                return None
+            has_value = any(value is not None for value in payload.values())
+            return payload if has_value else None
+
+        def build_intent_data(schedule_user_id, schedule_mentor_id):
+            intent = session.query(Intent).filter_by(
+                user_id=schedule_user_id,
+                mentor_id=schedule_mentor_id
+            ).first()
+
+            if not intent:
+                return None
+
+            user_profile = session.query(BasicInfo).filter_by(
+                useruniqid=str(schedule_user_id)
+            ).first()
+
+            user_account = session.query(User).filter_by(id=schedule_user_id).first()
+            user_details = None
+            if user_account:
+                user_details = session.query(UserDetails).filter_by(
+                    username=user_account.username
+                ).first()
+
+            user_profile_data = None
+            if user_profile:
+                user_profile_data = {
+                    'id': user_profile.id,
+                    'emailid': user_profile.emailid,
+                    'useruniqid': user_profile.useruniqid,
+                    'firstname': user_profile.firstname,
+                    'lastname': user_profile.lastname,
+                    'high_education': user_profile.high_education,
+                    'bachelor': user_profile.bachelor,
+                    'work_experience': user_profile.work_experience,
+                    'industry': user_profile.industry,
+                    'role': user_profile.role,
+                    'interested_stream': user_profile.interested_stream,
+                    'role_based': user_profile.role_based,
+                    'intent': _deserialize_intent_payload(user_profile.intent),
+                    'data_filed': user_profile.data_filed
+                }
+
+            first_name = None
+            last_name = None
+            if user_details and (user_details.first_name or user_details.last_name):
+                first_name = user_details.first_name
+                last_name = user_details.last_name
+            elif user_profile:
+                first_name = user_profile.firstname
+                last_name = user_profile.lastname
+
+            user_info_data = _compact_payload({
+                'user_id': schedule_user_id,
+                'username': user_account.username if user_account else None,
+                'email': intent.email,
+                'first_name': first_name,
+                'last_name': last_name,
+                'country': user_details.country if user_details else None
+            })
+
+            user_education_data = _compact_payload({
+                'high_education': user_profile.high_education if user_profile else None,
+                'bachelor': user_profile.bachelor if user_profile else None,
+                'school_name': user_details.school_name if user_details else None,
+                'bachelors_degree': user_details.bachelors_degree if user_details else None,
+                'masters_degree': user_details.masters_degree if user_details else None,
+                'certification': user_details.certification if user_details else None,
+                'activity': user_details.activity if user_details else None,
+                'stream_name': user_details.stream_name if user_details else None
+            })
+
+            user_work_data = _compact_payload({
+                'work_experience': user_profile.work_experience if user_profile else None,
+                'industry': user_profile.industry if user_profile else None,
+                'role': user_profile.role if user_profile else None,
+                'role_based': user_profile.role_based if user_profile else None
+            })
+
+            return {
+                'id': intent.id,
+                'useruniqid': intent.useruniqid,
+                'email': intent.email,
+                'area_exploring': intent.area_exploring,
+                'goal_challenge': intent.goal_challenge,
+                'support_types': intent.support_types,
+                'user_id': intent.user_id,
+                'mentor_id': intent.mentor_id,
+                'created_at': intent.created_at.isoformat(),
+                'user_info': user_info_data,
+                'user_profile': user_profile_data,
+                'user_education': user_education_data,
+                'user_work': user_work_data
+            }
+
         schedule_results = []
         for s in schedule_query.all():
-            # Fetch intent for this schedule using user_id and mentor_id
-            intent = session.query(Intent).filter_by(
-                user_id=s.user_id, 
-                mentor_id=s.mentor_id
-            ).first()
-            
-            intent_data = None
-            if intent:
-                intent_data = {
-                    'id': intent.id,
-                    'useruniqid': intent.useruniqid,
-                    'email': intent.email,
-                    'area_exploring': intent.area_exploring,
-                    'goal_challenge': intent.goal_challenge,
-                    'support_types': intent.support_types,
-                    'user_id': intent.user_id,
-                    'mentor_id': intent.mentor_id,
-                    'created_at': intent.created_at.isoformat()
-                }
+            intent_data = build_intent_data(s.user_id, s.mentor_id)
             
             schedule_results.append({
                 "id": s.id,
@@ -1817,25 +2037,7 @@ def get_schedules():
 
         trial_results = []
         for t in trial_query.all():
-            # Fetch intent for this trial schedule using user_id and mentor_id
-            intent = session.query(Intent).filter_by(
-                user_id=t.user_id, 
-                mentor_id=t.mentor_id
-            ).first()
-            
-            intent_data = None
-            if intent:
-                intent_data = {
-                    'id': intent.id,
-                    'useruniqid': intent.useruniqid,
-                    'email': intent.email,
-                    'area_exploring': intent.area_exploring,
-                    'goal_challenge': intent.goal_challenge,
-                    'support_types': intent.support_types,
-                    'user_id': intent.user_id,
-                    'mentor_id': intent.mentor_id,
-                    'created_at': intent.created_at.isoformat()
-                }
+            intent_data = build_intent_data(t.user_id, t.mentor_id)
             
             trial_results.append({
                 "id": t.id,
@@ -7551,4 +7753,3 @@ Base.metadata.create_all(engine)
 
 if __name__ == '__main__':
     socketio.run(app, debug=True)
-
