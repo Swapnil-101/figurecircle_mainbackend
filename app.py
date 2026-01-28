@@ -4329,13 +4329,79 @@ def get_milestone():
 
         # Get current milestone list (latest state)
         current_milestones = milestone_entry.milestone or []
+        if isinstance(current_milestones, str):
+            try:
+                current_milestones = json.loads(current_milestones)
+            except Exception:
+                current_milestones = []
+        if not isinstance(current_milestones, list):
+            current_milestones = [current_milestones]
+
+        # Compute milestone status using feedback (completed/active/pending)
+        feedback_query = session.query(Feedback).filter_by(
+            mentor_id=milestone_entry.mentor_id,
+            user_id=milestone_entry.user_id
+        )
+        if milestone_entry.check_id is not None:
+            feedback_query = feedback_query.filter_by(check_id=milestone_entry.check_id)
+        if milestone_entry.check_meeting_id is not None:
+            feedback_query = feedback_query.filter_by(check_meeting_id=milestone_entry.check_meeting_id)
+        feedback_entries = feedback_query.order_by(Feedback.created_at.desc()).all()
+
+        def _milestone_name(milestone_item):
+            if isinstance(milestone_item, dict):
+                return (milestone_item.get('milestone') or milestone_item.get('title') or "").strip()
+            return str(milestone_item or "").strip()
+
+        def _matches_feedback(milestone_name, feedback_text, index):
+            if not feedback_text:
+                return False
+            milestone_lower = milestone_name.lower().strip()
+            feedback_lower = str(feedback_text).lower().strip()
+            if milestone_lower and (
+                milestone_lower == feedback_lower
+                or milestone_lower in feedback_lower
+                or feedback_lower in milestone_lower
+            ):
+                return True
+            return f"milestone {index + 1}" in feedback_lower
+
+        def _compute_status(milestone_item, index):
+            if isinstance(milestone_item, dict):
+                existing_status = milestone_item.get("status")
+                if isinstance(existing_status, str) and existing_status.strip():
+                    return existing_status
+            milestone_name = _milestone_name(milestone_item)
+            matched = False
+            for feedback in feedback_entries:
+                if _matches_feedback(milestone_name, feedback.milestone, index):
+                    if feedback.milestone_achieved:
+                        return "completed"
+                    matched = True
+            return "active" if matched else "pending"
+
+        enriched_milestones = []
+        for idx, milestone_item in enumerate(current_milestones):
+            status = _compute_status(milestone_item, idx)
+            if isinstance(milestone_item, dict):
+                if milestone_item.get("status"):
+                    enriched_milestones.append(milestone_item)
+                else:
+                    milestone_copy = dict(milestone_item)
+                    milestone_copy["status"] = status
+                    enriched_milestones.append(milestone_copy)
+            else:
+                enriched_milestones.append({
+                    "milestone": milestone_item,
+                    "status": status
+                })
 
         # Prepare response with latest milestone outside
         milestone_data = {
             "serial_number": milestone_entry.serial_number,
             "user_id": milestone_entry.user_id,
             "mentor_id": milestone_entry.mentor_id,
-            "current_milestone": current_milestones,  # Latest state
+            "current_milestone": enriched_milestones,  # Latest state + status
             "check_id": milestone_entry.check_id,
             "check_meeting_id": milestone_entry.check_meeting_id,
             "created_at": milestone_entry.created_at,
