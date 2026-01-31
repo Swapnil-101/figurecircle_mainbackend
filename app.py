@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, redirect, url_for
+import csv
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -195,16 +196,26 @@ class education(Base):
     competitions = Column(Text, nullable=True)
     courses = Column(Text, nullable=True)
 
-    
-# class education(Base):
-#     __tablename__ = 'education_data'
+class IndustrySector(Base):
+    __tablename__ = 'industry_sectors'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sector = Column(String(255), nullable=False)
+    industry = Column(String(255), nullable=False)
 
-#     id = Column(Integer, primary_key=True, autoincrement=True)
-#     role = Column(String(255), nullable=False)
-#     stream = Column(String(255), nullable=False)
-#     bachelors_degree = Column(String(255), nullable=True)
-#     masters_degree = Column(String(255), nullable=True)
-#     certifications = Column(Text, nullable=True)
+class RoleSeniority(Base):
+    __tablename__ = 'role_seniority'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    industry = Column(String(255), nullable=False)
+    role_entry = Column(String(255), nullable=True)
+    role_mid = Column(String(255), nullable=True)
+    role_senior = Column(String(255), nullable=True)
+
+class RoleSkill(Base):
+    __tablename__ = 'role_skills'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    industry = Column(String(255), nullable=False)
+    role = Column(String(255), nullable=False)
+    skill = Column(String(255), nullable=False)
     
 class Mentor(Base):
     __tablename__ = 'mentors'
@@ -1239,6 +1250,67 @@ def get_all_degrees():
 
 degree_data = get_all_degrees()
 
+def map_experience_to_bucket(exp_string):
+    if not exp_string:
+        return "role_entry"
+    exp_string = exp_string.lower()
+    if '0-2' in exp_string or 'fresher' in exp_string or 'junior' in exp_string:
+        return "role_entry"
+    elif '3-7' in exp_string or 'mid' in exp_string:
+        return "role_mid"
+    elif '8+' in exp_string or 'senior' in exp_string or 'lead' in exp_string:
+        return "role_senior"
+    return "role_entry"
+
+def get_roles_by_industry_and_exp(industry_query, experience_bucket):
+    roles = []
+    if not industry_query:
+        return roles
+        
+    industry_query = industry_query.lower()
+    session = Session()
+    try:
+        # Get unique industries from DB for fuzzy matching
+        all_industries = session.query(RoleSeniority.industry).distinct().all()
+        available_role_industries = [i[0] for i in all_industries]
+        
+        # Step 1: Check if query is a Sector
+        related_records = session.query(IndustrySector.industry).filter(IndustrySector.sector.ilike(industry_query)).all()
+        related_industries = [r[0] for r in related_records]
+        
+        # If not a sector, or even if it is, also consider the query itself
+        search_terms = related_industries + [industry_query]
+        
+        matched_industries = set()
+        for term in search_terms:
+            # Fuzzy match the term against industries in RoleSeniority
+            matches = process.extract(term, available_role_industries, limit=3)
+            for matched_industry, score in matches:
+                if score >= 70: 
+                    matched_industries.add(matched_industry)
+        
+        for matched_industry in matched_industries:
+            roles_records = session.query(RoleSeniority).filter_by(industry=matched_industry).all()
+            for record in roles_records:
+                role_name = getattr(record, experience_bucket, None)
+                if role_name:
+                    roles.append(role_name)
+    finally:
+        session.close()
+    return list(set(roles))
+
+def get_role_skills(role_name):
+    skills = []
+    if not role_name:
+        return skills
+    session = Session()
+    try:
+        results = session.query(RoleSkill.skill).filter(RoleSkill.role.ilike(role_name)).all()
+        skills = [r[0] for r in results]
+    finally:
+        session.close()
+    return list(set(skills))
+
 
 @app.route('/search-degree', methods=['GET'])
 def search_degree():
@@ -1297,8 +1369,8 @@ def dream_list():
     if not degree_query and education_filter:
         degree_query = education_filter
 
-    if not degree_query:
-        return jsonify({"error": "Please provide a degree name"}), 400
+    if not degree_query and not industry_filter:
+        return jsonify({"error": "Please provide a degree name or industry"}), 400
 
     session = Session()
 
@@ -1327,6 +1399,24 @@ def dream_list():
         ]
         return " ".join([part for part in parts if part]).lower()
 
+    # Step 1: Map Experience to Bucket
+    experience_bucket = map_experience_to_bucket(experience_filter)
+    
+    # Step 2: Get Industry-based roles
+    industry_roles = []
+    if industry_filter:
+        industry_roles = get_roles_by_industry_and_exp(industry_filter, experience_bucket)
+    
+    # Step 3: Fetch all education entries and create role map
+    education_entries = session.query(education).all()
+    role_map = {
+        entry.role.strip().lower(): entry
+        for entry in education_entries
+        if entry.role
+    }
+
+    matched_roles_map = {}
+
     def build_match_payload(entry, match_type, base_score, confidence):
         if stream_filter and (entry.stream or '').strip().lower() != stream_filter:
             return None
@@ -1340,64 +1430,62 @@ def dream_list():
 
         industry_match = None
         if industry_filter:
-            industry_match = industry_filter in blob
+            industry_match = industry_filter.lower() in blob or entry.role.lower() in [r.lower() for r in industry_roles]
 
         experience_match = None
         if experience_filter:
-            experience_match = experience_filter in blob
+            experience_match = experience_filter.lower() in blob
 
-        degree_match = education_matches(entry, degree_query)
+        degree_match = education_matches(entry, degree_query) if degree_query else False
 
         score = base_score
         reasons = []
         if stream_filter:
-            score += 5
+            score += 10
             reasons.append("stream_match")
         if education_match:
-            score += 5
+            score += 10
             reasons.append("education_match")
         if degree_match:
-            score += 5
+            score += 15
             reasons.append("degree_match")
         if industry_match:
-            score += 3
+            score += 20
             reasons.append("industry_match")
         if experience_match:
-            score += 3
+            score += 5
             reasons.append("experience_match")
-        if degree_query and degree_query in blob and "degree_match" not in reasons:
-            score += 2
-            reasons.append("degree_term_match")
+            
+        # Specific role match from industry CSV
+        if entry.role.lower() in [r.lower() for r in industry_roles]:
+            score += 30
+            reasons.append("industry_role_match")
+
+        # Refine certifications: filter generic ones if specific ones exist
+        certs = split_csv(entry.certifications)
+        generic_certs = {"google cloud certified", "microsoft azure fundamentals", "pmp certification"}
+        specific_certs = [c for c in certs if c.lower() not in generic_certs]
+        
+        # If we have specific certs, we can still keep generic ones but only if total count is low
+        final_certs = specific_certs if specific_certs else certs
 
         return {
             "matched_role": entry.role,
             "stream": entry.stream,
             "bachelors_degree": entry.bachelors_degree,
             "masters_degree": entry.masters_degree,
-            "certifications": split_csv(entry.certifications),
+            "certifications": final_certs,
             "competitions": split_csv(entry.competitions),
             "courses": split_csv(entry.courses),
             "match_type": match_type,
             "confidence": confidence,
             "recommendation_score": score,
             "match_reasons": reasons,
-            "industry_match": industry_match,
-            "experience_match": experience_match,
-            "education_match": education_match,
-            "degree_match": degree_match
+            "industry_match": bool(industry_match),
+            "experience_match": bool(experience_match),
+            "education_match": bool(education_match),
+            "degree_match": bool(degree_match)
         }
-
-    # Fetch all education entries
-    education_entries = session.query(education).all()
-
-    # Create a map of role -> entry
-    role_map = {
-        entry.role.strip().lower(): entry
-        for entry in education_entries
-        if entry.role
-    }
-
-    matched_roles_map = {}
 
     def upsert_match(entry, match_type, base_score, confidence):
         payload = build_match_payload(entry, match_type, base_score, confidence)
@@ -1408,36 +1496,73 @@ def dream_list():
         if not existing or payload["recommendation_score"] > existing["recommendation_score"]:
             matched_roles_map[role_key] = payload
 
-    # If exact match exists, include it first
-    if degree_query in role_map:
-        exact_edu = role_map[degree_query]
-        upsert_match(exact_edu, "exact", 100, 100)
-        # Add all fuzzy matches excluding the exact match
+    # Add Industry Roles first
+    for role_name in industry_roles:
+        role_key = role_name.strip().lower()
+        if role_key in role_map:
+            upsert_match(role_map[role_key], "industry_priority", 100, 100)
+        else:
+            # If role from industry.csv not in education_data, create a synthetic entry
+            skills = get_role_skills(role_name)
+            # Find a related stream if possible
+            stream = "Multi-stream"
+            session = Session()
+            try:
+                # We can't really map to stream from role_seniority easily as it's not there,
+                # but we can try to find the industry and at least keep consistency.
+                pass
+            finally:
+                session.close()
+            
+            payload = {
+                "matched_role": role_name,
+                "stream": stream,
+                "bachelors_degree": "Relevant Degree",
+                "masters_degree": "Relevant Masters",
+                "certifications": [],
+                "competitions": [],
+                "courses": skills, # Use skills as courses if missing
+                "match_type": "industry_exclusive",
+                "confidence": 95,
+                "recommendation_score": 130, # High score for direct industry match
+                "match_reasons": ["industry_role_match"],
+                "industry_match": True,
+                "experience_match": True,
+                "education_match": False,
+                "degree_match": False
+            }
+            matched_roles_map[role_key] = payload
+
+    # Degree based matching
+    if degree_query:
+        if degree_query in role_map:
+            upsert_match(role_map[degree_query], "exact", 100, 100)
+        
+        # Fuzzy matches based on degree
         candidates = [role for role in role_map.keys() if role != degree_query]
-        fuzzy_matches = process.extract(degree_query, candidates, limit=None)
-    else:
-        # No exact match; get all fuzzy matches
-        fuzzy_matches = process.extract(degree_query, role_map.keys(), limit=None)
+        fuzzy_matches = process.extract(degree_query, candidates, limit=15)
+        for best_match, score in (fuzzy_matches or []):
+            if score >= 85: # Increased threshold to avoid random matches
+                upsert_match(role_map[best_match], "fuzzy", score, score)
 
-    # Append fuzzy matches
-    for best_match, score in (fuzzy_matches or []):
-        edu = role_map[best_match]
-        upsert_match(edu, "fuzzy", score, score)
-
-    # Also search in bachelors_degree and masters_degree fields
-    for entry in education_entries:
-        # Check if degree_query matches bachelor's or master's degree
-        if education_matches(entry, degree_query):
-            upsert_match(entry, "degree_match", 85, 85)
+        # Degree field search (e.g. searching for "B.Com" in bachelors_degree column)
+        for entry in education_entries:
+            if education_matches(entry, degree_query):
+                # Don't boost too much if it's just a degree match but not industry match
+                upsert_match(entry, "degree_match", 70, 85)
 
     matched_roles = list(matched_roles_map.values())
     matched_roles.sort(
         key=lambda item: (item.get("recommendation_score", 0), item.get("confidence", 0)),
         reverse=True
     )
+    
+    # Limit results
+    matched_roles = matched_roles[:30] # Increased limit
 
+    # Degree Recommendations (Certifications/Courses specific to degree)
     degree_recommendations = None
-    if degree_data:
+    if degree_data and degree_query:
         degree_record = degree_data.get(degree_query)
         degree_match_type = None
         degree_confidence = None
@@ -1471,7 +1596,6 @@ def dream_list():
             response["degree_recommendations"] = degree_recommendations
         return jsonify(response), 200
 
-    # Fallback - shouldn't be needed due to "always return" logic
     return jsonify({"error": "No relevant role found"}), 404
 
 @app.route('/streams', methods=['POST'])
@@ -5313,6 +5437,92 @@ def new_assign_mentor():
     finally:
         session.close()
 
+@app.route('/unassign_mentor', methods=['DELETE'])
+@jwt_required()
+def unassign_mentor():
+    current_user = get_jwt_identity()
+    session = Session()
+    try:
+        user = session.query(User).filter_by(username=current_user).first()
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        data = request.get_json()
+        mentor_id = data.get('mentor_id')
+        if not mentor_id:
+            return jsonify({'error': 'Mentor ID is required'}), 400
+
+        removed = False
+        
+        # 1. Check Newmentor system
+        assignment = session.query(UserMentorAssignment).filter_by(user_id=user.id, mentor_id=mentor_id).first()
+        if assignment:
+            session.delete(assignment)
+            removed = True
+            
+        # 2. Check Legacy Mentor system
+        mentor_legacy = session.query(Mentor).filter_by(id=mentor_id).first()
+        if mentor_legacy and mentor_legacy in user.mentors:
+            user.mentors.remove(mentor_legacy)
+            removed = True
+
+        if not removed:
+            return jsonify({'error': 'Assignment not found'}), 404
+
+        session.commit()
+        return jsonify({'message': 'Mentor unassigned successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': f"Failed to unassign mentor: {str(e)}"}), 500
+    finally:
+        session.close()
+
+
+@app.route('/unassign_user', methods=['DELETE'])
+@jwt_required()
+def unassign_user():
+    current_user = get_jwt_identity()
+    session = Session()
+    try:
+        # Step 1: Identify the mentor (who is making the request)
+        mentor_user = session.query(User).filter_by(username=current_user).first()
+        if not mentor_user:
+            return jsonify({'error': 'User not found'}), 404
+
+        data = request.get_json()
+        user_id = data.get('user_id') # The mentee to remove
+        if not user_id:
+            return jsonify({'error': 'User ID is required'}), 400
+
+        removed = False
+
+        # Check in Newmentor system
+        new_mentor = session.query(Newmentor).filter_by(user_id=mentor_user.id).first()
+        if new_mentor:
+            assignment = session.query(UserMentorAssignment).filter_by(user_id=user_id, mentor_id=new_mentor.mentor_id).first()
+            if assignment:
+                session.delete(assignment)
+                removed = True
+
+        # Check in Legacy Mentor system
+        legacy_mentor = session.query(Mentor).filter_by(user_id=mentor_user.id).first()
+        if legacy_mentor:
+            mentee = session.query(User).filter_by(id=user_id).first()
+            if mentee and legacy_mentor in mentee.mentors:
+                mentee.mentors.remove(legacy_mentor)
+                removed = True
+
+        if not removed:
+            return jsonify({'error': 'Assignment not found or unauthorized'}), 404
+
+        session.commit()
+        return jsonify({'message': 'User removed successfully'}), 200
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': f"Failed to unassign user: {str(e)}"}), 500
+    finally:
+        session.close()
+
 #get mentor list
 @app.route('/get_assigned_mentors', methods=['GET'])
 @jwt_required()
@@ -7831,4 +8041,4 @@ def delete_meeting_host(room_id):
 Base.metadata.create_all(engine)
 
 if __name__ == '__main__':
-    socketio.run(app, debug=True)
+    socketio.run(app, debug=True, host='0.0.0.0', port=5001, allow_unsafe_werkzeug=True)
