@@ -1321,41 +1321,122 @@ def search_degree():
 
     session = Session()
 
-    # Fetch all education entries
-    education_entries = session.query(education).all()
+    try:
+        # 1. Check Degree table first
+        degrees = session.query(Degree).all()
+        degree_map = {d.name.strip().lower(): d for d in degrees}
+        
+        # Exact match on Degree table
+        if query in degree_map:
+            deg = degree_map[query]
+            return jsonify({
+                "matched_role": "N/A",
+                "degree": deg.name,
+                "courses": deg.courses.split(", ") if deg.courses else [],
+                "competitions": deg.competitions.split(", ") if deg.competitions else [],
+                "certifications": deg.certifications.split(", ") if deg.certifications else [],
+                "match_type": "exact_degree"
+            })
+            
+        # Fuzzy match on Degree table
+        if degree_map:
+            best_match, score = process.extractOne(query, degree_map.keys())
+            if score >= 70:
+                deg = degree_map[best_match]
+                return jsonify({
+                    "matched_role": "N/A",
+                    "degree": deg.name,
+                    "courses": deg.courses.split(", ") if deg.courses else [],
+                    "competitions": deg.competitions.split(", ") if deg.competitions else [],
+                    "certifications": deg.certifications.split(", ") if deg.certifications else [],
+                    "match_type": "fuzzy_degree",
+                    "confidence": score
+                })
 
-    # Create a map of role -> entry
-    role_map = {entry.role.strip().lower(): entry for entry in education_entries}
+        # 2. Fallback to education table
+        education_entries = session.query(education).all()
+        
+        # Map by bachelors and masters degrees to find a better match
+        edu_degree_map = {}
+        for entry in education_entries:
+            b_deg = (entry.bachelors_degree or "").strip().lower()
+            m_deg = (entry.masters_degree or "").strip().lower()
+            if b_deg and b_deg not in edu_degree_map:
+                edu_degree_map[b_deg] = entry
+            if m_deg and m_deg not in edu_degree_map:
+                edu_degree_map[m_deg] = entry
 
-    # Try exact match first
-    if query in role_map:
-        edu = role_map[query]
+        # Exact match on education table degrees
+        if query in edu_degree_map:
+            edu = edu_degree_map[query]
+            return jsonify({
+                "matched_role": edu.role,
+                "degree": edu.bachelors_degree or edu.masters_degree,
+                "courses": edu.courses.split(", ") if edu.courses else [],
+                "competitions": edu.competitions.split(", ") if edu.competitions else [],
+                "certifications": edu.certifications.split(", ") if edu.certifications else [],
+                "match_type": "exact_education_degree"
+            })
+            
+        # Fuzzy match on education table degrees
+        if edu_degree_map:
+            best_match, score = process.extractOne(query, edu_degree_map.keys())
+            if score >= 70:
+                edu = edu_degree_map[best_match]
+                return jsonify({
+                    "matched_role": edu.role,
+                    "degree": edu.bachelors_degree or edu.masters_degree,
+                    "courses": edu.courses.split(", ") if edu.courses else [],
+                    "competitions": edu.competitions.split(", ") if edu.competitions else [],
+                    "certifications": edu.certifications.split(", ") if edu.certifications else [],
+                    "match_type": "fuzzy_education_degree",
+                    "confidence": score
+                })
+
+        # 3. Fallback to role_map
+        role_map = {entry.role.strip().lower(): entry for entry in education_entries}
+
+        if query in role_map:
+            edu = role_map[query]
+            return jsonify({
+                "matched_role": edu.role,
+                "degree": edu.bachelors_degree or edu.masters_degree,
+                "courses": edu.courses.split(", ") if edu.courses else [],
+                "competitions": edu.competitions.split(", ") if edu.competitions else [],
+                "certifications": edu.certifications.split(", ") if edu.certifications else [],
+                "match_type": "exact_role"
+            })
+
+        if role_map:
+            best_match, score = process.extractOne(query, role_map.keys())
+            if score >= 60:
+                edu = role_map[best_match]
+                return jsonify({
+                    "matched_role": edu.role,
+                    "degree": edu.bachelors_degree or edu.masters_degree,
+                    "courses": edu.courses.split(", ") if edu.courses else [],
+                    "competitions": edu.competitions.split(", ") if edu.competitions else [],
+                    "certifications": edu.certifications.split(", ") if edu.certifications else [],
+                    "match_type": "fuzzy_role",
+                    "confidence": score
+                })
+
+        # 4. No relevant matches at all
         return jsonify({
-            "matched_role": edu.role,
-            "degree": edu.bachelors_degree or edu.masters_degree,
-            "courses": edu.courses.split(", ") if edu.courses else [],
-            "competitions": edu.competitions.split(", ") if edu.competitions else [],
-            "certifications": edu.certifications.split(", ") if edu.certifications else [],
-            "match_type": "exact"
+            "matched_role": "N/A",
+            "degree": query,
+            "courses": [],
+            "competitions": [],
+            "certifications": [],
+            "match_type": "none",
+            "message": "No relevant courses found for this degree"
         })
 
-    # If no exact match, do fuzzy matching
-    best_match, score = process.extractOne(query, role_map.keys())
-
-    if best_match:
-        edu = role_map[best_match]
-        return jsonify({
-            "matched_role": edu.role,
-            "degree": edu.bachelors_degree or edu.masters_degree,
-            "courses": edu.courses.split(", ") if edu.courses else [],
-            "competitions": edu.competitions.split(", ") if edu.competitions else [],
-            "certifications": edu.certifications.split(", ") if edu.certifications else [],
-            "match_type": "fuzzy",
-            "confidence": score
-        })
-
-    # Fallback - shouldn't be needed due to "always return" logic
-    return jsonify({"error": "No relevant role found"}), 404
+    except Exception as e:
+        app.logger.error(f"Error in search-degree: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+    finally:
+        session.close()
 
 
 @app.route('/dream-list', methods=['GET'])
@@ -1383,9 +1464,29 @@ def dream_list():
         if not term:
             return False
         term = term.lower()
+        
+        # Breakdown the term by common separators
+        sub_terms = [t.strip() for t in term.replace('|', ',').replace('(', ',').replace(')', ',').replace('/', ',').split(',') if t.strip()]
+        
         bachelors = (entry.bachelors_degree or '').strip().lower()
         masters = (entry.masters_degree or '').strip().lower()
-        return term in bachelors or term in masters
+        
+        # Try direct match for any sub-term
+        for st in sub_terms:
+            if st in bachelors or st in masters:
+                return True
+            # Also try keyword matching if the sub-term is multi-word
+            words = [w for w in st.split() if len(w) > 2] # ignore short words like 'of', 'in'
+            if words and all(w in bachelors or w in masters for w in words):
+                return True
+                
+        # Final fallback - check if any word from the query is found in the entry's degree fields
+        query_words = [w for w in term.replace('|', ' ').split() if len(w) > 3] # only longer keywords
+        for qw in query_words:
+            if qw in bachelors or qw in masters:
+                return True
+                
+        return False
 
     def entry_text(entry):
         parts = [
@@ -1542,7 +1643,7 @@ def dream_list():
         candidates = [role for role in role_map.keys() if role != degree_query]
         fuzzy_matches = process.extract(degree_query, candidates, limit=15)
         for best_match, score in (fuzzy_matches or []):
-            if score >= 85: # Increased threshold to avoid random matches
+            if score >= 65: # Lowered threshold to be more inclusive of related roles
                 upsert_match(role_map[best_match], "fuzzy", score, score)
 
         # Degree field search (e.g. searching for "B.Com" in bachelors_degree column)
@@ -2046,29 +2147,63 @@ def get_schedules():
             has_value = any(value is not None for value in payload.values())
             return payload if has_value else None
 
-        def build_intent_data(schedule_user_id, schedule_mentor_id):
-            user_account = session.query(User).filter_by(id=schedule_user_id).first()
-            user_email = user_account.username if user_account else None
-            user_details = None
-            if user_account:
-                user_details = session.query(UserDetails).filter_by(
-                    username=user_account.username
-                ).first()
+        schedule_entries = schedule_query.all()
+        trial_entries = trial_query.all()
+        
+        # Collect distinct user_ids and mentor_ids
+        user_ids = set()
+        mentor_ids = set()
+        
+        for s in schedule_entries + trial_entries:
+            user_ids.add(s.user_id)
+            mentor_ids.add(s.mentor_id)
 
+        # Bulk queries
+        user_accounts = {u.id: u for u in session.query(User).filter(User.id.in_(user_ids)).all()}
+        user_emails = {u.id: u.username for u in user_accounts.values()}
+        
+        usernames = list(user_emails.values())
+        user_details_map = {d.username: d for d in session.query(UserDetails).filter(UserDetails.username.in_(usernames)).all()}
+        
+        # Fetch basic info. Note: useruniqid might be str(user_id) or user_email
+        all_user_ids_str = [str(uid) for uid in user_ids]
+        user_profiles_list = session.query(BasicInfo).filter(
+            or_(
+                BasicInfo.emailid.in_(usernames),
+                BasicInfo.useruniqid.in_(usernames),
+                BasicInfo.useruniqid.in_(all_user_ids_str)
+            )
+        ).all()
+        
+        user_profile_map = {}
+        for p in user_profiles_list:
+            if p.emailid in usernames:
+                user_profile_map[p.emailid] = p
+            elif p.useruniqid in usernames:
+                user_profile_map[p.useruniqid] = p
+            elif p.useruniqid in all_user_ids_str:
+                user_profile_map[p.useruniqid] = p
+                
+        # Bulk query intents
+        intents_list = session.query(Intent).filter(
+            Intent.user_id.in_(user_ids), 
+            Intent.mentor_id.in_(mentor_ids)
+        ).all()
+        
+        intent_map = {(i.user_id, i.mentor_id): i for i in intents_list}
+
+        def build_intent_data_bulk(schedule_user_id, schedule_mentor_id):
+            user_account = user_accounts.get(schedule_user_id)
+            user_email = user_emails.get(schedule_user_id)
+            user_details = user_details_map.get(user_email) if user_email else None
+            
             user_profile = None
             if user_email:
-                user_profile = session.query(BasicInfo).filter(
-                    or_(BasicInfo.emailid == user_email, BasicInfo.useruniqid == user_email)
-                ).first()
+                user_profile = user_profile_map.get(user_email)
             if not user_profile:
-                user_profile = session.query(BasicInfo).filter_by(
-                    useruniqid=str(schedule_user_id)
-                ).first()
+                user_profile = user_profile_map.get(str(schedule_user_id))
 
-            intent = session.query(Intent).filter_by(
-                user_id=schedule_user_id,
-                mentor_id=schedule_mentor_id
-            ).first()
+            intent = intent_map.get((schedule_user_id, schedule_mentor_id))
 
             intent_email = None
             if intent and intent.email:
@@ -2151,8 +2286,8 @@ def get_schedules():
             }
 
         schedule_results = []
-        for s in schedule_query.all():
-            intent_data = build_intent_data(s.user_id, s.mentor_id)
+        for s in schedule_entries:
+            intent_data = build_intent_data_bulk(s.user_id, s.mentor_id)
             
             schedule_results.append({
                 "id": s.id,
@@ -2173,8 +2308,8 @@ def get_schedules():
             })
 
         trial_results = []
-        for t in trial_query.all():
-            intent_data = build_intent_data(t.user_id, t.mentor_id)
+        for t in trial_entries:
+            intent_data = build_intent_data_bulk(t.user_id, t.mentor_id)
             
             trial_results.append({
                 "id": t.id,
@@ -5395,7 +5530,7 @@ def new_assign_mentor():
         new_assignment = UserMentorAssignment(user_id=user_id, mentor_id=mentor_id)
         session.add(new_assignment)
 
-        # Save notifications
+        # Save notifications in legacy table
         notification_message_user = f"You have been assigned a mentor: {mentor.name}."
         notification_message_mentor = f"You have been assigned to a new user: {user.username}."
 
@@ -5405,18 +5540,29 @@ def new_assign_mentor():
         session.add(notification_for_mentor)
         session.commit()
 
-        # Emit notifications via Socket.IO
-        user_notifications = session.query(Notification).filter_by(user_id=user_id).all()
-        user_notification_data = [{
-            "message": n.message,
-            "timestamp": n.timestamp.isoformat(),
-            "is_read": n.is_read
-        } for n in user_notifications]
+        # Send MeetingNotification (this emits the correct socket event to frontend)
+        try:
+            send_meeting_notification(
+                user_id=user_id,
+                mentor_id=mentor_id,
+                notification_type='mentor_assigned',
+                title='Mentor Assigned',
+                message=notification_message_user,
+                notification_data={'mentor_name': mentor.name}
+            )
+            
+            send_meeting_notification(
+                user_id=mentor.user_id,
+                mentor_id=mentor_id,
+                notification_type='user_assigned',
+                title='User Assigned',
+                message=notification_message_mentor,
+                notification_data={'user_name': user.username}
+            )
+        except Exception as e:
+            print(f"[new_assign_mentor] Error sending notification: {str(e)}")
 
-        # Debug logging
-        print(f"[new_assign_mentor] Emitting notification to user_{user_id} and user_{mentor.user_id}")
-        
-        # Emit real-time notifications to both user and mentor
+        # Legacy emit - keeping for backwards compatibility if needed
         socketio.emit('notification', {
             'message': notification_message_user, 
             'mentor_id': mentor_id, 
@@ -6859,7 +7005,7 @@ def send_meeting_notification(user_id, mentor_id, notification_type, title, mess
         }
         
         # Send to user room
-        socketio.emit('new_meeting_notification', notification_data, room=f"meeting_user_{user_id}", namespace='/')
+        socketio.emit('notification', notification_data, room=f"user_{user_id}", namespace='/')
         
         return notification.id
     except Exception as e:
@@ -8041,4 +8187,4 @@ def delete_meeting_host(room_id):
 Base.metadata.create_all(engine)
 
 if __name__ == '__main__':
-     socketio.run(app, debug=True)
+     socketio.run(app, debug=True, allow_unsafe_werkzeug=True)
