@@ -1977,6 +1977,10 @@ def create_schedule():
 
         # Send meeting notifications to both user and mentor
         try:
+            # Query the mentor to get their base user_id
+            mentor = session.query(Mentor).get(mentor_id)
+            mentor_base_user_id = mentor.user_id if mentor else mentor_id
+
             # Notification for user
             user_notification_id = send_meeting_notification(
                 user_id=user_id,
@@ -1992,7 +1996,7 @@ def create_schedule():
             
             # Notification for mentor
             mentor_notification_id = send_meeting_notification(
-                user_id=mentor_id,  # For mentor, we use mentor_id as user_id in the notification
+                user_id=mentor_base_user_id,  # Use actual mentor user_id
                 mentor_id=mentor_id,
                 notification_type='meeting_scheduled',
                 title='Meeting Scheduled',
@@ -2073,6 +2077,10 @@ def create_trial_schedule():
 
         # Send meeting notifications to both user and mentor for trial meeting
         try:
+            # Query the mentor to get their base user_id
+            mentor = session.query(Mentor).get(mentor_id)
+            mentor_base_user_id = mentor.user_id if mentor else mentor_id
+
             # Notification for user
             user_notification_id = send_meeting_notification(
                 user_id=user_id,
@@ -2088,7 +2096,7 @@ def create_trial_schedule():
             
             # Notification for mentor
             mentor_notification_id = send_meeting_notification(
-                user_id=mentor_id,  # For mentor, we use mentor_id as user_id in the notification
+                user_id=mentor_base_user_id,  # Use actual mentor user_id
                 mentor_id=mentor_id,
                 notification_type='meeting_scheduled',
                 title='Trial Meeting Scheduled',
