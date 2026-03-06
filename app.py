@@ -625,9 +625,9 @@ app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USE_SSL'] = False
 
 
-stripe.api_key = os.getenv('STRIPE_SECRET_KEY')
-STRIPE_SECRET_KEY= os.getenv('STRIPE_SECRET_KEY')
-STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY')
+stripe.api_key = os.getenv('STRIPE_SECRET_KEY', 'sk_test_51PIIfbSGPpCYPf3FC9VIUAGFcfPMgXpyXp1klEsXgKgIMIqSpr2E5Wc9ExwXQgFVvm7bJ1TOlNt3jLl3bSmwvMuW00DHSZzOch')
+STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', 'sk_test_51PIIfbSGPpCYPf3FC9VIUAGFcfPMgXpyXp1klEsXgKgIMIqSpr2E5Wc9ExwXQgFVvm7bJ1TOlNt3jLl3bSmwvMuW00DHSZzOch')
+STRIPE_PUBLISHABLE_KEY = os.getenv('STRIPE_PUBLISHABLE_KEY', 'pk_test_51PIIfbSGPpCYPf3F0bzI1LOUH1FUh798McTLN0wQ7KHNiYm7RHRaB1FNUi6DusJqZfWmM4nJjRQ7Xyu6AuKwTGTN00nCGe3cqn')
 google_client_id = os.getenv('GOOGLE_CLIENT_ID')
 google_client_secret = os.getenv('GOOGLE_CLIENT_SECRET')
 
@@ -1322,6 +1322,23 @@ def search_degree():
     session = Session()
 
     try:
+        # Helper: collect all degree names from Degree table and education table
+        def get_all_degree_names():
+            all_degrees = []
+            for d in session.query(Degree).all():
+                if d.name:
+                    all_degrees.append(d.name.strip())
+            for entry in session.query(education).all():
+                if entry.bachelors_degree:
+                    b = entry.bachelors_degree.strip()
+                    if b not in all_degrees:
+                        all_degrees.append(b)
+                if entry.masters_degree:
+                    m = entry.masters_degree.strip()
+                    if m not in all_degrees:
+                        all_degrees.append(m)
+            return all_degrees[:6]
+
         # 1. Check Degree table first
         degrees = session.query(Degree).all()
         degree_map = {d.name.strip().lower(): d for d in degrees}
@@ -1332,7 +1349,7 @@ def search_degree():
             return jsonify({
                 "matched_role": "N/A",
                 "degree": deg.name,
-                "courses": deg.courses.split(", ") if deg.courses else [],
+                "courses": get_all_degree_names(),
                 "competitions": deg.competitions.split(", ") if deg.competitions else [],
                 "certifications": deg.certifications.split(", ") if deg.certifications else [],
                 "match_type": "exact_degree"
@@ -1346,7 +1363,7 @@ def search_degree():
                 return jsonify({
                     "matched_role": "N/A",
                     "degree": deg.name,
-                    "courses": deg.courses.split(", ") if deg.courses else [],
+                    "courses": get_all_degree_names(),
                     "competitions": deg.competitions.split(", ") if deg.competitions else [],
                     "certifications": deg.certifications.split(", ") if deg.certifications else [],
                     "match_type": "fuzzy_degree",
@@ -1372,7 +1389,7 @@ def search_degree():
             return jsonify({
                 "matched_role": edu.role,
                 "degree": edu.bachelors_degree or edu.masters_degree,
-                "courses": edu.courses.split(", ") if edu.courses else [],
+                "courses": get_all_degree_names(),
                 "competitions": edu.competitions.split(", ") if edu.competitions else [],
                 "certifications": edu.certifications.split(", ") if edu.certifications else [],
                 "match_type": "exact_education_degree"
@@ -1386,7 +1403,7 @@ def search_degree():
                 return jsonify({
                     "matched_role": edu.role,
                     "degree": edu.bachelors_degree or edu.masters_degree,
-                    "courses": edu.courses.split(", ") if edu.courses else [],
+                    "courses": get_all_degree_names(),
                     "competitions": edu.competitions.split(", ") if edu.competitions else [],
                     "certifications": edu.certifications.split(", ") if edu.certifications else [],
                     "match_type": "fuzzy_education_degree",
@@ -1401,7 +1418,7 @@ def search_degree():
             return jsonify({
                 "matched_role": edu.role,
                 "degree": edu.bachelors_degree or edu.masters_degree,
-                "courses": edu.courses.split(", ") if edu.courses else [],
+                "courses": get_all_degree_names(),
                 "competitions": edu.competitions.split(", ") if edu.competitions else [],
                 "certifications": edu.certifications.split(", ") if edu.certifications else [],
                 "match_type": "exact_role"
@@ -1414,7 +1431,7 @@ def search_degree():
                 return jsonify({
                     "matched_role": edu.role,
                     "degree": edu.bachelors_degree or edu.masters_degree,
-                    "courses": edu.courses.split(", ") if edu.courses else [],
+                    "courses": get_all_degree_names(),
                     "competitions": edu.competitions.split(", ") if edu.competitions else [],
                     "certifications": edu.certifications.split(", ") if edu.certifications else [],
                     "match_type": "fuzzy_role",
@@ -1425,11 +1442,11 @@ def search_degree():
         return jsonify({
             "matched_role": "N/A",
             "degree": query,
-            "courses": [],
+            "courses": get_all_degree_names(),
             "competitions": [],
             "certifications": [],
             "match_type": "none",
-            "message": "No relevant courses found for this degree"
+            "message": "No relevant degrees found for this search"
         })
 
     except Exception as e:
@@ -3150,6 +3167,45 @@ def verify_payment():
     return jsonify({"message": "Payment verified successfully!"}), 200
 
 
+@app.route('/create_stripe_order', methods=['POST'])
+def create_stripe_order():
+    session = Session()
+    data = request.get_json()
+    mentor_id = data.get('mentor_id') 
+    mentor = session.query(Newmentor).filter_by(mentor_id=mentor_id).first()
+    if mentor is None:
+        session.close()
+        return jsonify({"message": "Mentor not found"}), 404
+      
+    try:
+        mentor_fees = int(float(mentor.fee) * 100)
+
+        # For Indian Stripe accounts, export rules require a description and optionally customer details.
+        # Adding an Indian shipping address enforces domestic routing for transactions.
+        payment_intent = stripe.PaymentIntent.create(
+            amount=mentor_fees,
+            currency='inr',
+            description=f'Mentor Booking: {mentor.name}',
+            payment_method_types=['card'],
+            shipping={
+                'name': 'User Payment',
+                'address': {
+                    'line1': '123 Test Street',
+                    'city': 'Mumbai',
+                    'state': 'MH',
+                    'postal_code': '400001',
+                    'country': 'IN',
+                },
+            },
+        )
+        session.close()
+        return jsonify({
+            'clientSecret': payment_intent.client_secret,
+            'publishableKey': STRIPE_PUBLISHABLE_KEY
+        }), 200
+    except Exception as e:
+        session.close()
+        return jsonify(error=str(e)), 500
 @app.route('/wallet/init', methods=['POST'])
 @jwt_required()
 def init_wallet():
